@@ -24,27 +24,34 @@ BOTTOM_BAR_HEIGHT = 65
 BOARD_SIZE = 600
 ROWS, COLS = 8, 8
 SQ_SIZE = BOARD_SIZE // 8
+PIECE_SCALE = 0.94
 
 BOARD_X = LEFT_MARGIN + PANEL_W + GAP
 BOARD_Y = MARGIN + TOP_BAR_HEIGHT + GAP
 
-LIGHT = (255, 248, 220)  # Cream color for light squares
-DARK = (139, 69, 19)    # Saddle brown for dark squares
-SELECT_COLOR = (255, 215, 0)  # Gold for selection
-MOVE_HINT = (50, 205, 50)     # Lime green for move hints
-BG = (245, 245, 245)          # Light gray background
-TEXT = (30, 30, 30)           # Dark gray text
-PANEL = (220, 220, 220)       # Light panel color
+LIGHT = (234, 240, 225)  # Light square color
+DARK = (192, 203, 178)   # Dark square color
+SELECT_COLOR = (150, 168, 136)  # Warm highlight for selection
+MOVE_HINT = (142, 173, 143)      # Soft green for move hints
+BG_TOP = (248, 249, 244)
+BG_BOTTOM = (230, 237, 224)
+TEXT = (35, 45, 39)
+PANEL = (244, 246, 239)
 
 # Hover colors
-LIGHT_HOVER = (255, 255, 200)  # Light yellow for hover
-DARK_HOVER = (160, 82, 45)     # Lighter brown for hover
+LIGHT_HOVER = (238, 244, 229)
+DARK_HOVER = (204, 216, 189)
 
 # Shadow color
-SHADOW_COLOR = (0, 0, 0, 50)  # Semi-transparent black
+SHADOW_COLOR = (0, 0, 0, 40)
+ACCENT = (106, 136, 100)
+LAST_MOVE_COLOR = (140, 165, 123, 110)
+CAPTURE_HIGHLIGHT = (205, 110, 98)
+MOVE_DOT_COLOR = (255, 255, 255)
+HISTORY_TEXT = (72, 82, 74)
 
-POPUP_BG = (245, 240, 230)
-POPUP_BORDER = (120, 95, 70)
+POPUP_BG = (250, 247, 242)
+POPUP_BORDER = (140, 110, 85)
 
 WHITE_BTN = (236, 228, 213)
 WHITE_BTN_HOVER = (246, 238, 223)
@@ -57,14 +64,27 @@ DARK_TEXT = (245, 245, 245)
 
 OVERLAY = (0, 0, 0, 90)
 
+SETTINGS_BUTTON_SIZE = 48
+SETTINGS_MARGIN = 16
+SETTINGS_PANEL_SIZE = (320, 240)
+SETTINGS_PANEL_BG = (252, 252, 250)
+SETTINGS_PANEL_BORDER = (204, 211, 196)
+SETTINGS_TOGGLE_ON = (106, 136, 100)
+SETTINGS_TOGGLE_OFF = (205, 210, 202)
+SETTINGS_TOGGLE_LABEL = (68, 78, 72)
+
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FONT_PATH = os.path.join(BASE_DIR, "assets", "font", "Roboto-Regular.ttf")
 
 ui_icons = {}
 piece_images = {}
+history_piece_images = {}
+captured_piece_images = {}
 font_cache = {}
 sound_effects = {}
 sound_channels = {}
+click_sound_enabled = True
+piece_sound_enabled = True
 
 ANIMATION_SPEED = 0.16
 AI_MOVE_DELAY = 300  # Giảm từ 500 xuống 300ms
@@ -82,10 +102,15 @@ def load_images():
 
     pieces = ["bB", "bK", "bN", "bP", "bQ", "bR", "wB", "wK", "wN", "wP", "wQ", "wR"]
 
+    history_icon_size = 24
+    captured_icon_size = 30
     for p in pieces:
         img_path = os.path.join(BASE_DIR, "assets", "images", f"{p}.png")
         img = pygame.image.load(img_path).convert_alpha()
-        piece_images[p] = pygame.transform.smoothscale(img, (SQ_SIZE, SQ_SIZE))
+        target_size = int(SQ_SIZE * PIECE_SCALE)
+        piece_images[p] = pygame.transform.smoothscale(img, (target_size, target_size))
+        history_piece_images[p] = pygame.transform.smoothscale(img, (history_icon_size, history_icon_size))
+        captured_piece_images[p] = pygame.transform.smoothscale(img, (captured_icon_size, captured_icon_size))
 
     ui_icons["reset"] = pygame.transform.smoothscale(
         pygame.image.load(os.path.join(BASE_DIR, "assets", "icon", "reset.png")).convert_alpha(),
@@ -102,6 +127,10 @@ def load_images():
     ui_icons["handshake"] = pygame.transform.smoothscale(
         pygame.image.load(os.path.join(BASE_DIR, "assets", "icon", "handshake.png")).convert_alpha(),
         (56, 56)
+    )
+    ui_icons["settings"] = pygame.transform.smoothscale(
+        pygame.image.load(os.path.join(BASE_DIR, "assets", "icon", "settings.png")).convert_alpha(),
+        (48, 48)
     )
 
 
@@ -149,6 +178,12 @@ def play_sound(key):
     if not sound or channel is None:
         return
 
+    if key == "click" and not click_sound_enabled:
+        return
+
+    if key in ("move", "capture") and not piece_sound_enabled:
+        return
+
     channel.stop()
     channel.play(sound)
 
@@ -165,6 +200,16 @@ def play_click_sound():
     play_sound("click")
 
 
+def set_click_sound_enabled(value):
+    global click_sound_enabled
+    click_sound_enabled = bool(value)
+
+
+def set_piece_sound_enabled(value):
+    global piece_sound_enabled
+    piece_sound_enabled = bool(value)
+
+
 def draw_text(screen, text, size, color, x, y, center=False):
     font = get_font(size)
     surface = font.render(text, True, color)
@@ -178,6 +223,22 @@ def draw_text(screen, text, size, color, x, y, center=False):
     screen.blit(surface, rect)
 
 
+def draw_background_gradient(screen):
+    height = screen.get_height()
+    for y in range(height):
+        ratio = y / height
+        r = int(BG_TOP[0] + (BG_BOTTOM[0] - BG_TOP[0]) * ratio)
+        g = int(BG_TOP[1] + (BG_BOTTOM[1] - BG_TOP[1]) * ratio)
+        b = int(BG_TOP[2] + (BG_BOTTOM[2] - BG_TOP[2]) * ratio)
+        pygame.draw.line(screen, (r, g, b), (0, y), (screen.get_width(), y))
+
+
+def draw_piece_shadow(screen, x, y, size):
+    shadow = pygame.Surface((size, size // 2), pygame.SRCALPHA)
+    pygame.draw.ellipse(shadow, (0, 0, 0, 40), shadow.get_rect())
+    screen.blit(shadow, (x + 6, y + size - size // 3))
+
+
 def ease_in_out(t):
     return t * t * (3 - 2 * t)
 
@@ -185,58 +246,64 @@ def ease_in_out(t):
 def draw_board(screen, board_obj, valid_moves, check_king_pos=None, animation=None, hover_square=None):
     anim_start = None
     anim_end = None
+    last_move = board_obj.move_log[-1] if board_obj.move_log else None
 
     if animation and animation["active"]:
         anim_start = animation["start"]
         anim_end = animation["end"]
+
+    board_rect = pygame.Rect(BOARD_X - 10, BOARD_Y - 10, BOARD_SIZE + 20, BOARD_SIZE + 20)
+    board_bg = pygame.Surface((board_rect.width, board_rect.height), pygame.SRCALPHA)
+    pygame.draw.rect(board_bg, (*LIGHT, 14), board_bg.get_rect(), border_radius=24)
+    pygame.draw.rect(board_bg, (255, 255, 255, 220), board_bg.get_rect(), 1, border_radius=24)
+    screen.blit(board_bg, board_rect.topleft)
+
+    if last_move:
+        for square in (last_move["start"], last_move["end"]):
+            square_rect = pygame.Rect(
+                BOARD_X + square[1] * SQ_SIZE,
+                BOARD_Y + square[0] * SQ_SIZE,
+                SQ_SIZE,
+                SQ_SIZE
+            )
+            overlay = pygame.Surface((SQ_SIZE, SQ_SIZE), pygame.SRCALPHA)
+            pygame.draw.rect(overlay, LAST_MOVE_COLOR, overlay.get_rect(), border_radius=10)
+            screen.blit(overlay, square_rect.topleft)
 
     for row in range(8):
         for col in range(8):
             base_color = LIGHT if (row + col) % 2 == 0 else DARK
             color = base_color
 
-            # Hover effect
             if hover_square == (row, col):
                 color = LIGHT_HOVER if (row + col) % 2 == 0 else DARK_HOVER
 
-            rect = pygame.Rect(BOARD_X + col * SQ_SIZE, BOARD_Y + row * SQ_SIZE, SQ_SIZE, SQ_SIZE)
-            pygame.draw.rect(screen, color, rect)
-
-            # Draw shadow for pieces
-            piece = board_obj.board[row][col]
-            if piece != "--" and not (animation and animation["active"] and (row, col) == anim_start):
-                shadow_rect = pygame.Rect(BOARD_X + col * SQ_SIZE + 2, BOARD_Y + row * SQ_SIZE + 2, SQ_SIZE, SQ_SIZE)
-                shadow_surface = pygame.Surface((SQ_SIZE, SQ_SIZE), pygame.SRCALPHA)
-                shadow_surface.fill(SHADOW_COLOR)
-                screen.blit(shadow_surface, shadow_rect)
+            square_rect = pygame.Rect(BOARD_X + col * SQ_SIZE, BOARD_Y + row * SQ_SIZE, SQ_SIZE, SQ_SIZE)
+            pygame.draw.rect(screen, color, square_rect)
 
             if check_king_pos == (row, col):
-                s = pygame.Surface((SQ_SIZE, SQ_SIZE), pygame.SRCALPHA)
-                s.fill((255, 0, 0, 100))
-                screen.blit(s, (BOARD_X + col * SQ_SIZE, BOARD_Y + row * SQ_SIZE))
+                danger = pygame.Surface((SQ_SIZE, SQ_SIZE), pygame.SRCALPHA)
+                danger.fill((235, 83, 78, 160))
+                screen.blit(danger, square_rect.topleft)
 
             if board_obj.selected_square == (row, col):
-                # Glow effect for selection
-                glow_surface = pygame.Surface((SQ_SIZE + 8, SQ_SIZE + 8), pygame.SRCALPHA)
-                pygame.draw.rect(glow_surface, (255, 215, 0, 150), glow_surface.get_rect(), border_radius=4)
-                screen.blit(glow_surface, (BOARD_X + col * SQ_SIZE - 4, BOARD_Y + row * SQ_SIZE - 4))
-                pygame.draw.rect(screen, SELECT_COLOR, rect, 3)
+                glow_surface = pygame.Surface((SQ_SIZE + 14, SQ_SIZE + 14), pygame.SRCALPHA)
+                pygame.draw.rect(glow_surface, (194, 217, 182, 140), glow_surface.get_rect(), border_radius=12)
+                screen.blit(glow_surface, (square_rect.x - 7, square_rect.y - 7))
+                pygame.draw.rect(screen, SELECT_COLOR, square_rect, 3, border_radius=10)
 
     for (r, c) in valid_moves:
         rect = pygame.Rect(BOARD_X + c * SQ_SIZE, BOARD_Y + r * SQ_SIZE, SQ_SIZE, SQ_SIZE)
         target_piece = board_obj.board[r][c]
 
         if target_piece != "--":
-            # Red glow for captures
-            glow_surface = pygame.Surface((SQ_SIZE + 8, SQ_SIZE + 8), pygame.SRCALPHA)
-            pygame.draw.rect(glow_surface, (255, 0, 0, 150), glow_surface.get_rect(), border_radius=4)
-            screen.blit(glow_surface, (BOARD_X + c * SQ_SIZE - 4, BOARD_Y + r * SQ_SIZE - 4))
-            pygame.draw.rect(screen, (220, 50, 50), rect, 4)
+            capture_surface = pygame.Surface((SQ_SIZE, SQ_SIZE), pygame.SRCALPHA)
+            pygame.draw.rect(capture_surface, (*CAPTURE_HIGHLIGHT, 90), capture_surface.get_rect(), border_radius=10)
+            screen.blit(capture_surface, rect.topleft)
+            pygame.draw.circle(screen, CAPTURE_HIGHLIGHT, rect.center, 15, 3)
         else:
-            center_x = BOARD_X + c * SQ_SIZE + SQ_SIZE // 2
-            center_y = BOARD_Y + r * SQ_SIZE + SQ_SIZE // 2
-            pygame.draw.circle(screen, MOVE_HINT, (center_x, center_y), 12)
-            pygame.draw.circle(screen, (255, 255, 255), (center_x, center_y), 6)
+            pygame.draw.circle(screen, MOVE_HINT, rect.center, 10)
+            pygame.draw.circle(screen, MOVE_DOT_COLOR, rect.center, 5)
 
     for row in range(8):
         for col in range(8):
@@ -250,13 +317,20 @@ def draw_board(screen, board_obj, valid_moves, check_king_pos=None, animation=No
             if animation and animation["active"] and animation["captured_piece"] != "--" and (row, col) == anim_end:
                 continue
 
-            # Draw shadow
-            shadow_rect = pygame.Rect(BOARD_X + col * SQ_SIZE + 2, BOARD_Y + row * SQ_SIZE + 2, SQ_SIZE, SQ_SIZE)
-            shadow_surface = pygame.Surface((SQ_SIZE, SQ_SIZE), pygame.SRCALPHA)
-            shadow_surface.fill(SHADOW_COLOR)
-            screen.blit(shadow_surface, shadow_rect)
+            piece_img = piece_images[piece]
+            piece_size = piece_img.get_width()
+            pos_x = BOARD_X + col * SQ_SIZE + (SQ_SIZE - piece_size) // 2
+            pos_y = BOARD_Y + row * SQ_SIZE + (SQ_SIZE - piece_size) // 2
 
-            screen.blit(piece_images[piece], (BOARD_X + col * SQ_SIZE, BOARD_Y + row * SQ_SIZE))
+            if board_obj.selected_square == (row, col):
+                selection_scale = 1.04
+                scaled_size = int(piece_size * selection_scale)
+                piece_img = pygame.transform.smoothscale(piece_img, (scaled_size, scaled_size))
+                pos_x = BOARD_X + col * SQ_SIZE + (SQ_SIZE - scaled_size) // 2
+                pos_y = BOARD_Y + row * SQ_SIZE + (SQ_SIZE - scaled_size) // 2
+
+            draw_piece_shadow(screen, pos_x, pos_y, piece_size)
+            screen.blit(piece_img, (pos_x, pos_y))
 
     if animation and animation["active"] and animation["piece"]:
         start_x = BOARD_X + anim_start[1] * SQ_SIZE
@@ -268,23 +342,24 @@ def draw_board(screen, board_obj, valid_moves, check_king_pos=None, animation=No
         current_x = start_x + (end_x - start_x) * p
         current_y = start_y + (end_y - start_y) * p
 
-        # Draw shadow for animated piece
-        shadow_surface = pygame.Surface((SQ_SIZE, SQ_SIZE), pygame.SRCALPHA)
-        shadow_surface.fill(SHADOW_COLOR)
-        screen.blit(shadow_surface, (current_x + 2, current_y + 2))
+        animated_piece = piece_images[animation["piece"]]
+        anim_size = animated_piece.get_width()
+        pos_x = current_x + (SQ_SIZE - anim_size) / 2
+        pos_y = current_y + (SQ_SIZE - anim_size) / 2
 
-        screen.blit(piece_images[animation["piece"]], (current_x, current_y))
+        draw_piece_shadow(screen, pos_x, pos_y, anim_size)
+        screen.blit(animated_piece, (pos_x, pos_y))
 
-        # Capture effect: fade out captured piece
         if animation["captured_piece"] != "--":
             captured_alpha = int(255 * (1 - p))
             captured_img = piece_images[animation["captured_piece"]].copy()
             captured_img.set_alpha(captured_alpha)
-            scale_factor = 1 + 0.2 * p  # Slight scale up
+            scale_factor = 1 + 0.2 * p
             scaled_size = int(SQ_SIZE * scale_factor)
             scaled_img = pygame.transform.smoothscale(captured_img, (scaled_size, scaled_size))
             offset = (scaled_size - SQ_SIZE) // 2
             screen.blit(scaled_img, (end_x - offset, end_y - offset))
+
 
 
 def draw_icon_button(screen, rect, icon_key, bg_color, hover=False):
@@ -293,11 +368,92 @@ def draw_icon_button(screen, rect, icon_key, bg_color, hover=False):
     else:
         color = bg_color
 
-    pygame.draw.rect(screen, color, rect, border_radius=10)
+    shadow_surface = pygame.Surface((rect.width + 8, rect.height + 8), pygame.SRCALPHA)
+    pygame.draw.rect(shadow_surface, (0, 0, 0, 35), shadow_surface.get_rect(), border_radius=14)
+    screen.blit(shadow_surface, (rect.x - 4, rect.y - 4))
+
+    pygame.draw.rect(screen, color, rect, border_radius=12)
+    pygame.draw.rect(screen, (255, 255, 255, 30), rect, 1, border_radius=12)
 
     icon = ui_icons[icon_key]
     icon_rect = icon.get_rect(center=rect.center)
     screen.blit(icon, icon_rect)
+
+
+def draw_settings_button(screen, rect, hover=False, pressed=False):
+    bg_color = WHITE_BTN_HOVER if hover else WHITE_BTN
+    if pressed:
+        scale = 0.92
+    elif hover:
+        scale = 1.05
+    else:
+        scale = 1.0
+
+    button_w = int(rect.width * scale)
+    button_h = int(rect.height * scale)
+    button_x = rect.x + (rect.width - button_w) // 2
+    button_y = rect.y + (rect.height - button_h) // 2
+    button_rect = pygame.Rect(button_x, button_y, button_w, button_h)
+
+    shadow_surface = pygame.Surface((button_rect.width + 10, button_rect.height + 10), pygame.SRCALPHA)
+    pygame.draw.rect(shadow_surface, (0, 0, 0, 24), shadow_surface.get_rect(), border_radius=16)
+    screen.blit(shadow_surface, (button_rect.x - 5, button_rect.y - 5))
+
+    pygame.draw.rect(screen, bg_color, button_rect, border_radius=16)
+    pygame.draw.rect(screen, (178, 191, 175), button_rect, 1, border_radius=16)
+
+    icon = ui_icons["settings"]
+    icon_rect = icon.get_rect(center=button_rect.center)
+    screen.blit(icon, icon_rect)
+
+
+def draw_settings_panel(screen, click_sound_enabled, piece_sound_enabled):
+    panel_width, panel_height = SETTINGS_PANEL_SIZE
+    panel_rect = pygame.Rect(
+        (WIDTH - panel_width) // 2,
+        (HEIGHT - panel_height) // 2,
+        panel_width,
+        panel_height,
+    )
+
+    overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+    overlay.fill((0, 0, 0, 110))
+    screen.blit(overlay, (0, 0))
+
+    shadow = pygame.Surface((panel_rect.width + 20, panel_rect.height + 20), pygame.SRCALPHA)
+    pygame.draw.rect(shadow, (0, 0, 0, 24), shadow.get_rect(), border_radius=16)
+    screen.blit(shadow, (panel_rect.x - 10, panel_rect.y - 10))
+
+    pygame.draw.rect(screen, SETTINGS_PANEL_BG, panel_rect, border_radius=14)
+    pygame.draw.rect(screen, SETTINGS_PANEL_BORDER, panel_rect, 1, border_radius=14)
+
+    draw_text(screen, "Cài đặt", 26, ACCENT, panel_rect.centerx, panel_rect.y + 34, center=True)
+
+    toggle_width = 74
+    toggle_height = 34
+    toggle_x = panel_rect.right - toggle_width - 24
+
+    toggle_y1 = panel_rect.y + 84
+    toggle_y2 = panel_rect.y + 148
+
+    draw_text(screen, "Click Sound", 20, SETTINGS_TOGGLE_LABEL, panel_rect.x + 24, toggle_y1 + 4, center=False)
+    draw_text(screen, "Piece Move Sound", 20, SETTINGS_TOGGLE_LABEL, panel_rect.x + 24, toggle_y2 + 4, center=False)
+
+    for idx, state in enumerate((click_sound_enabled, piece_sound_enabled)):
+        toggle_y = toggle_y1 if idx == 0 else toggle_y2
+        toggle_rect = pygame.Rect(toggle_x, toggle_y, toggle_width, toggle_height)
+        fill = SETTINGS_TOGGLE_ON if state else SETTINGS_TOGGLE_OFF
+        pygame.draw.rect(screen, fill, toggle_rect, border_radius=16)
+        pygame.draw.rect(screen, SETTINGS_PANEL_BORDER, toggle_rect, 1, border_radius=16)
+
+        knob_x = toggle_rect.x + 6 if not state else toggle_rect.right - toggle_height + 6
+        knob_rect = pygame.Rect(knob_x, toggle_rect.y + 4, toggle_height - 8, toggle_height - 8)
+        pygame.draw.ellipse(screen, (255, 255, 255), knob_rect)
+
+        label = "ON" if state else "OFF"
+        draw_text(screen, label, 16, TEXT if state else (90, 96, 92), toggle_rect.centerx, toggle_rect.centery, center=True)
+
+    return panel_rect, pygame.Rect(toggle_x, toggle_y1, toggle_width, toggle_height), pygame.Rect(toggle_x, toggle_y2, toggle_width, toggle_height)
 
 
 def piece_name(piece_code):
@@ -318,6 +474,33 @@ def piece_name(piece_code):
     return names.get(piece_code, piece_code)
 
 
+def coord_to_notation(pos):
+    row, col = pos
+    file = chr(ord('a') + col)
+    rank = str(8 - row)
+    return f"{file}{rank}"
+
+
+def format_move_notation(move):
+    piece = move["moving_piece"]
+    symbol = piece[1] if piece[1] != "P" else ""
+    start = coord_to_notation(move["start"])
+    end = coord_to_notation(move["end"])
+    return f"{symbol}{start}-{end}"
+
+
+def truncate_text(text, font, max_width):
+    if font.size(text)[0] <= max_width:
+        return text
+
+    # cắt trực tiếp, không thêm ...
+    for i in range(len(text), 0, -1):
+        if font.size(text[:i])[0] <= max_width:
+            return text[:i]
+
+    return ""
+
+
 def draw_side_panels(screen, board_obj):
     left_x = LEFT_MARGIN
     right_x = BOARD_X + BOARD_SIZE + GAP
@@ -325,86 +508,257 @@ def draw_side_panels(screen, board_obj):
     panel_y = BOARD_Y
     panel_h = BOARD_SIZE
 
-    pygame.draw.rect(screen, PANEL, (left_x, panel_y, PANEL_W, panel_h), border_radius=12)
-    draw_text(screen, "Quân trắng", 24, TEXT, left_x + PANEL_W // 2, panel_y + 30, center=True)
-    draw_text(screen, "bị ăn", 24, TEXT, left_x + PANEL_W // 2, panel_y + 60, center=True)
+    pygame.draw.rect(screen, PANEL, (left_x, panel_y, PANEL_W, panel_h), border_radius=16)
+    pygame.draw.rect(screen, PANEL, (right_x, panel_y, PANEL_W, panel_h), border_radius=16)
 
-    pygame.draw.rect(screen, PANEL, (right_x, panel_y, PANEL_W, panel_h), border_radius=12)
-    draw_text(screen, "Quân đen", 24, TEXT, right_x + PANEL_W // 2, panel_y + 30, center=True)
-    draw_text(screen, "bị ăn", 24, TEXT, right_x + PANEL_W // 2, panel_y + 60, center=True)
+    draw_text(screen, "Lịch sử nước đi", 20, ACCENT, left_x + PANEL_W // 2, panel_y + 24, center=True)
+    draw_text(screen, "Quân bị ăn", 20, ACCENT, right_x + PANEL_W // 2, panel_y + 24, center=True)
 
-    icon_size = 32
+    # ===== MOVE HISTORY (2 LINE / TURN - BALANCED) =====
+
+    history_start_y = panel_y + 52
+    history_entries = []
+
+    # --- Build history data (KHÔNG ĐỔI LOGIC) ---
+    start_index = max(0, len(board_obj.move_log) - 10)
+    if start_index % 2 == 1:
+        start_index -= 1
+
+    for idx in range(start_index, len(board_obj.move_log), 2):
+        white_move_obj = board_obj.move_log[idx]
+        white_move = format_move_notation(white_move_obj)
+        white_piece = white_move_obj["moving_piece"]
+
+        black_move = ""
+        black_piece = None
+
+        if idx + 1 < len(board_obj.move_log):
+            black_move_obj = board_obj.move_log[idx + 1]
+            black_move = format_move_notation(black_move_obj)
+            black_piece = black_move_obj["moving_piece"]
+
+        move_number = idx // 2 + 1
+        history_entries.append((move_number, white_piece, white_move, black_piece, black_move))
+
+
+    # --- Render UI (KHÔNG PHÁ LAYOUT) ---
+    font = get_font(15)
+    icon_size = 20
+    icon_text_gap = 5
+
+    entry_height = 24
+    turn_gap = 6
+
+    number_offset = 26
+    content_offset = 40
+
+    for i, (move_number, white_piece, white_move, black_piece, black_move) in enumerate(history_entries[-5:]):
+        base_y = history_start_y + i * (entry_height * 2 + turn_gap)
+
+        # ===== WHITE =====
+        y1 = base_y
+        text_y1 = y1 + (entry_height - font.get_height()) // 2
+        icon_y1 = y1 + (entry_height - icon_size) // 2
+
+        number_x = left_x + 14
+        draw_text(screen, f"{move_number}.", 15, HISTORY_TEXT, number_x, text_y1)
+
+        white_x = number_x + content_offset
+
+        max_width = PANEL_W - content_offset - 20
+        white_move = truncate_text(white_move, font, max_width)
+
+        white_icon = history_piece_images.get(white_piece)
+        if white_icon:
+            screen.blit(white_icon, (white_x, icon_y1))
+
+        draw_text(
+            screen,
+            white_move,
+            15,
+            HISTORY_TEXT,
+            white_x + icon_size + icon_text_gap,
+            text_y1
+        )
+
+        # ===== BLACK =====
+        if black_piece and black_move:
+            y2 = base_y + entry_height
+            text_y2 = y2 + (entry_height - font.get_height()) // 2
+            icon_y2 = y2 + (entry_height - icon_size) // 2
+
+            black_x = white_x  # 👉 cân bằng tuyệt đối
+
+            max_width = PANEL_W - content_offset - 20
+            black_move = truncate_text(black_move, font, max_width)
+
+            black_icon = history_piece_images.get(black_piece)
+            if black_icon:
+                screen.blit(black_icon, (black_x, icon_y2))
+
+            draw_text(
+                screen,
+                black_move,
+                15,
+                HISTORY_TEXT,
+                black_x + icon_size + icon_text_gap,
+                text_y2
+            )
+    # Improved captured pieces panel with two equal sections
+    header_height = 52  # Space for "Quân bị ăn" header
+    section_height = (panel_h - header_height) // 2  # Two equal sections below header
+    padding = 12
+    title_font = get_font(18)
+    icon_size = 30
     gap_icon = 8
     cols = 4
-    start_y = panel_y + 95
-
-    for i, piece in enumerate(board_obj.captured_white):
+    
+    # Calculate centered x position for grid
+    total_grid_width = cols * icon_size + (cols - 1) * gap_icon  # 144px
+    usable_width = PANEL_W - 2 * padding  # 156px
+    grid_start_offset = (usable_width - total_grid_width) // 2  # 6px
+    grid_x = right_x + padding + grid_start_offset
+    
+    # White captured pieces (top section)
+    white_section_y = panel_y + header_height
+    white_title_y = white_section_y + padding + 4
+    white_content_y = white_section_y + padding + 32
+    
+    draw_text(screen, "Trắng", 18, TEXT, right_x + PANEL_W // 2, white_title_y, center=True)
+    
+    # Render white captured pieces with overflow handling
+    white_pieces = board_obj.captured_white
+    last_rendered_index = -1
+    
+    for i, piece in enumerate(white_pieces):
         row = i // cols
         col = i % cols
-        x = left_x + 10 + col * (icon_size + gap_icon)
-        y = start_y + row * (icon_size + gap_icon)
-
-        if y + icon_size > panel_y + panel_h - 10:
+        x = grid_x + col * (icon_size + gap_icon)
+        y = white_content_y + row * (icon_size + gap_icon)
+        
+        # Check if this row exceeds section bounds
+        if y + icon_size > white_section_y + section_height - padding:
             break
-
-        small = pygame.transform.smoothscale(piece_images[piece], (icon_size, icon_size))
+        
+        small = captured_piece_images[piece]
         screen.blit(small, (x, y))
-
-    for i, piece in enumerate(board_obj.captured_black):
+        last_rendered_index = i
+    
+    # Show overflow count if there are more pieces AND at least 1 piece was rendered
+    if last_rendered_index >= 0 and last_rendered_index < len(white_pieces) - 1:
+        remaining = len(white_pieces) - last_rendered_index - 1
+        overflow_text = f"+{remaining}"
+        row = (last_rendered_index + 1) // cols
+        col = (last_rendered_index + 1) % cols
+        x = grid_x + col * (icon_size + gap_icon)
+        y = white_content_y + row * (icon_size + gap_icon)
+        
+        # Draw semi-transparent background for overflow indicator
+        overflow_bg = pygame.Surface((icon_size, icon_size), pygame.SRCALPHA)
+        pygame.draw.rect(overflow_bg, (150, 168, 136, 180), overflow_bg.get_rect(), border_radius=4)
+        screen.blit(overflow_bg, (x, y))
+        
+        # Draw overflow text
+        draw_text(screen, overflow_text, 18, (255, 255, 255), x + icon_size // 2, y + icon_size // 2, center=True)
+    
+    # Divider line between sections
+    divider_y = panel_y + header_height + section_height
+    pygame.draw.line(screen, (200, 210, 200), (right_x + 12, divider_y), (right_x + PANEL_W - 12, divider_y), 1)
+    
+    # Black captured pieces (bottom section)
+    black_section_y = panel_y + header_height + section_height
+    black_title_y = black_section_y + padding + 4
+    black_content_y = black_section_y + padding + 32
+    
+    draw_text(screen, "Đen", 18, TEXT, right_x + PANEL_W // 2, black_title_y, center=True)
+    
+    # Render black captured pieces with overflow handling
+    black_pieces = board_obj.captured_black
+    last_rendered_index = -1
+    
+    for i, piece in enumerate(black_pieces):
         row = i // cols
         col = i % cols
-        x = right_x + 10 + col * (icon_size + gap_icon)
-        y = start_y + row * (icon_size + gap_icon)
-
-        if y + icon_size > panel_y + panel_h - 10:
+        x = grid_x + col * (icon_size + gap_icon)
+        y = black_content_y + row * (icon_size + gap_icon)
+        
+        # Check if this row exceeds section bounds
+        if y + icon_size > black_section_y + section_height - padding:
             break
-
-        small = pygame.transform.smoothscale(piece_images[piece], (icon_size, icon_size))
+        
+        small = captured_piece_images[piece]
         screen.blit(small, (x, y))
+        last_rendered_index = i
+    
+    # Show overflow count if there are more pieces AND at least 1 piece was rendered
+    if last_rendered_index >= 0 and last_rendered_index < len(black_pieces) - 1:
+        remaining = len(black_pieces) - last_rendered_index - 1
+        overflow_text = f"+{remaining}"
+        row = (last_rendered_index + 1) // cols
+        col = (last_rendered_index + 1) % cols
+        x = grid_x + col * (icon_size + gap_icon)
+        y = black_content_y + row * (icon_size + gap_icon)
+        
+        # Draw semi-transparent background for overflow indicator
+        overflow_bg = pygame.Surface((icon_size, icon_size), pygame.SRCALPHA)
+        pygame.draw.rect(overflow_bg, (150, 168, 136, 180), overflow_bg.get_rect(), border_radius=4)
+        screen.blit(overflow_bg, (x, y))
+        
+        # Draw overflow text
+        draw_text(screen, overflow_text, 18, (255, 255, 255), x + icon_size // 2, y + icon_size // 2, center=True)
 
 
 def draw_top_bar(screen, white_to_move, turn_time, total_game_time, ai_level=None):
     top_rect = pygame.Rect(BOARD_X, MARGIN, BOARD_SIZE, TOP_BAR_HEIGHT)
-    pygame.draw.rect(screen, PANEL, top_rect, border_radius=12)
+    pygame.draw.rect(screen, PANEL, top_rect, border_radius=18)
+    pygame.draw.rect(screen, (255, 255, 255, 120), top_rect, 1, border_radius=18)
 
     draw_text(
         screen,
         f"Tổng thời gian: {format_time(total_game_time)}",
-        20,
-        TEXT,
+        18,
+        ACCENT,
         top_rect.centerx,
-        top_rect.y + 18,
+        top_rect.y + 28,
         center=True
     )
 
     white_display = turn_time if white_to_move else 600
     black_display = turn_time if not white_to_move else 600
 
+    white_bg = pygame.Rect(int(top_rect.x + 20), top_rect.y + 40, 170, 28)
+    black_bg = pygame.Rect(int(top_rect.right - 20 - 170), top_rect.y + 40, 170, 28)
+
+    pygame.draw.rect(screen, (255, 255, 255), white_bg, border_radius=14)
+    pygame.draw.rect(screen, (255, 255, 255), black_bg, border_radius=14)
+    pygame.draw.rect(screen, (210, 222, 201), white_bg, 1, border_radius=14)
+    pygame.draw.rect(screen, (210, 222, 201), black_bg, 1, border_radius=14)
+
     draw_text(
         screen,
         f"Trắng: {format_time(white_display)}",
-        28,
+        20,
         TEXT,
-        int(top_rect.x + top_rect.width * 0.25),
-        top_rect.y + 48,
+        white_bg.centerx,
+        white_bg.centery,
         center=True
     )
 
     draw_text(
         screen,
         f"Đen: {format_time(black_display)}",
-        28,
+        20,
         TEXT,
-        int(top_rect.x + top_rect.width * 0.75),
-        top_rect.y + 48,
+        black_bg.centerx,
+        black_bg.centery,
         center=True
     )
 
     if ai_level is not None:
         level_names = {"easy": "Dễ", "normal": "Bình thường", "hard": "Khó"}
         level_text = level_names.get(ai_level, ai_level.title())
-        level_surface = get_font(18).render(f"Độ khó: {level_text}", True, TEXT)
-        level_rect = level_surface.get_rect(topright=(top_rect.right - 10, top_rect.y + 12))
+        level_surface = get_font(16).render(f"Độ khó: {level_text}", True, TEXT)
+        level_rect = level_surface.get_rect(topright=(top_rect.right - 12, top_rect.y + 14))
         screen.blit(level_surface, level_rect)
 
     right_x = BOARD_X + BOARD_SIZE + GAP
@@ -423,45 +777,33 @@ def draw_top_bar(screen, white_to_move, turn_time, total_game_time, ai_level=Non
 
 def draw_end_popup(screen, winner):
     overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
-    overlay.fill(OVERLAY)
+    overlay.fill((0, 0, 0, 170))
     screen.blit(overlay, (0, 0))
 
     popup_w = 420
-    popup_h = 320
+    popup_h = 260
     popup_rect = pygame.Rect((WIDTH - popup_w) // 2, (HEIGHT - popup_h) // 2, popup_w, popup_h)
 
-    pygame.draw.rect(screen, POPUP_BG, popup_rect, border_radius=18)
-    pygame.draw.rect(screen, POPUP_BORDER, popup_rect, 3, border_radius=18)
+    pygame.draw.rect(screen, POPUP_BG, popup_rect, border_radius=20)
+    pygame.draw.rect(screen, POPUP_BORDER, popup_rect, 2, border_radius=20)
 
     center_x = popup_rect.centerx
 
     if winner == "Hòa":
-        screen.blit(ui_icons["handshake"], ui_icons["handshake"].get_rect(center=(center_x, popup_rect.y + 52)))
-        screen.blit(
-            pygame.transform.smoothscale(piece_images["wK"], (64, 64)),
-            pygame.Rect(center_x - 75, popup_rect.y + 88, 64, 64)
-        )
-        screen.blit(
-            pygame.transform.smoothscale(piece_images["bK"], (64, 64)),
-            pygame.Rect(center_x + 11, popup_rect.y + 88, 64, 64)
-        )
-        draw_text(screen, "Hòa", 34, TEXT, center_x, popup_rect.y + 175, center=True)
+        draw_text(screen, "Draw", 36, TEXT, center_x, popup_rect.y + 80, center=True)
+        draw_text(screen, "Game drawn", 22, TEXT, center_x, popup_rect.y + 130, center=True)
     else:
-        king_piece = "wK" if winner == "Trắng" else "bK"
-        screen.blit(ui_icons["trophy"], ui_icons["trophy"].get_rect(center=(center_x, popup_rect.y + 50)))
-        screen.blit(
-            pygame.transform.smoothscale(piece_images[king_piece], (78, 78)),
-            pygame.Rect(center_x - 39, popup_rect.y + 88, 78, 78)
-        )
-        draw_text(screen, f"{winner} thắng", 34, TEXT, center_x, popup_rect.y + 185, center=True)
+        draw_text(screen, "Checkmate", 38, TEXT, center_x, popup_rect.y + 72, center=True)
+        result_text = "White wins" if winner == "Trắng" else "Black wins"
+        draw_text(screen, result_text, 26, TEXT, center_x, popup_rect.y + 130, center=True)
 
     button_w = 150
     button_h = 46
     spacing = 20
     start_x = popup_rect.centerx - (button_w * 2 + spacing) // 2
 
-    replay_rect = pygame.Rect(start_x, popup_rect.y + 240, button_w, button_h)
-    home_rect = pygame.Rect(start_x + button_w + spacing, popup_rect.y + 240, button_w, button_h)
+    replay_rect = pygame.Rect(start_x, popup_rect.y + 180, button_w, button_h)
+    home_rect = pygame.Rect(start_x + button_w + spacing, popup_rect.y + 180, button_w, button_h)
 
     mouse_pos = pygame.mouse.get_pos()
     draw_icon_button(screen, replay_rect, "reset", WHITE_BTN, replay_rect.collidepoint(mouse_pos))
@@ -478,17 +820,14 @@ def draw_bottom_bar(screen, message):
         BOTTOM_BAR_HEIGHT
     )
 
-    pygame.draw.rect(screen, PANEL, rect, border_radius=12)
+    pygame.draw.rect(screen, (248, 249, 244), rect, border_radius=16)
+    pygame.draw.rect(screen, (214, 225, 199), rect, 1, border_radius=16)
 
-    draw_text(
-        screen,
-        message,
-        30,
-        TEXT,
-        rect.centerx,
-        rect.centery,
-        center=True
-    )
+    # Improved text alignment with proper spacing
+    font = get_font(26)
+    text_surface = font.render(message, True, TEXT)
+    text_rect = text_surface.get_rect(center=(rect.centerx, rect.centery))
+    screen.blit(text_surface, text_rect)
 
 
 def get_square_from_mouse(pos):
@@ -701,9 +1040,13 @@ def run_pvp(screen):
     winner = None
     check_king_pos = None
     animation = create_animation_state()
+    settings_open = False
+    settings_button_rect = pygame.Rect(SETTINGS_MARGIN, SETTINGS_MARGIN, SETTINGS_BUTTON_SIZE, SETTINGS_BUTTON_SIZE)
+    click_toggle_rect = None
+    piece_toggle_rect = None
 
     while True:
-        screen.fill(BG)
+        draw_background_gradient(screen)
         current_color = "w" if board_obj.white_to_move else "b"
         current_name = "Trắng" if current_color == "w" else "Đen"
 
@@ -763,9 +1106,24 @@ def run_pvp(screen):
 
         hover_square = get_square_from_mouse(pygame.mouse.get_pos())
 
+        draw_settings_button(
+            screen,
+            settings_button_rect,
+            settings_button_rect.collidepoint(pygame.mouse.get_pos()),
+            settings_button_rect.collidepoint(pygame.mouse.get_pos()) and pygame.mouse.get_pressed()[0]
+        )
+
         draw_side_panels(screen, board_obj)
         draw_board(screen, board_obj, valid_moves, check_king_pos, animation, hover_square)
         draw_bottom_bar(screen, message)
+
+        panel_rect = None
+        if settings_open:
+            panel_rect, click_toggle_rect, piece_toggle_rect = draw_settings_panel(
+                screen,
+                click_sound_enabled,
+                piece_sound_enabled,
+            )
 
         if winner is not None:
             popup_reset_rect, popup_home_rect = draw_end_popup(screen, winner)
@@ -780,6 +1138,27 @@ def run_pvp(screen):
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 play_click_sound()
                 pos = pygame.mouse.get_pos()
+
+                if settings_button_rect.collidepoint(pos):
+                    settings_open = not settings_open
+                    continue
+
+                if settings_open:
+                    panel_clicked = panel_rect and panel_rect.collidepoint(pos)
+                    toggle_clicked = False
+                    
+                    if panel_clicked:
+                        if click_toggle_rect and click_toggle_rect.collidepoint(pos):
+                            set_click_sound_enabled(not click_sound_enabled)
+                            toggle_clicked = True
+                        elif piece_toggle_rect and piece_toggle_rect.collidepoint(pos):
+                            set_piece_sound_enabled(not piece_sound_enabled)
+                            toggle_clicked = True
+                    
+                    # Only close if clicked outside panel (not on toggles)
+                    if not panel_clicked and not toggle_clicked:
+                        settings_open = False
+                    continue
 
                 if winner is not None:
                     if popup_reset_rect and click_button(
@@ -853,7 +1232,7 @@ def run_pvp(screen):
                     valid_moves = get_legal_moves(board_obj, row, col)
 
                     if len(valid_moves) == 0:
-                        message = f"{piece_name(piece)} không thể đi vì đang bảo vệ vua"
+                        message = "Không thể đi được quân này"
                     else:
                         message = f"Đã chọn {piece_name(piece)}"
 
@@ -899,6 +1278,10 @@ def run_pve(screen, ai_level="normal"):
     ai_color = "b"
 
     animation = create_animation_state()
+    settings_open = False
+    settings_button_rect = pygame.Rect(SETTINGS_MARGIN, SETTINGS_MARGIN, SETTINGS_BUTTON_SIZE, SETTINGS_BUTTON_SIZE)
+    click_toggle_rect = None
+    piece_toggle_rect = None
 
     ai_turn_started_at = None
     ai_thinking = False
@@ -919,7 +1302,7 @@ def run_pve(screen, ai_level="normal"):
             ai_move_result["move"] = move
 
     while True:
-        screen.fill(BG)
+        draw_background_gradient(screen)
         current_color = "w" if board_obj.white_to_move else "b"
         current_name = "Trắng" if current_color == "w" else "Đen"
 
@@ -1028,9 +1411,24 @@ def run_pve(screen, ai_level="normal"):
 
         hover_square = get_square_from_mouse(pygame.mouse.get_pos())
 
+        draw_settings_button(
+            screen,
+            settings_button_rect,
+            settings_button_rect.collidepoint(pygame.mouse.get_pos()),
+            settings_button_rect.collidepoint(pygame.mouse.get_pos()) and pygame.mouse.get_pressed()[0]
+        )
+
         draw_side_panels(screen, board_obj)
         draw_board(screen, board_obj, valid_moves, check_king_pos, animation, hover_square)
         draw_bottom_bar(screen, message)
+
+        panel_rect = None
+        if settings_open:
+            panel_rect, click_toggle_rect, piece_toggle_rect = draw_settings_panel(
+                screen,
+                click_sound_enabled,
+                piece_sound_enabled,
+            )
 
         if winner is not None:
             popup_reset_rect, popup_home_rect = draw_end_popup(screen, winner)
@@ -1045,6 +1443,27 @@ def run_pve(screen, ai_level="normal"):
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 play_click_sound()
                 pos = pygame.mouse.get_pos()
+
+                if settings_button_rect.collidepoint(pos):
+                    settings_open = not settings_open
+                    continue
+
+                if settings_open:
+                    panel_clicked = panel_rect and panel_rect.collidepoint(pos)
+                    toggle_clicked = False
+                    
+                    if panel_clicked:
+                        if click_toggle_rect and click_toggle_rect.collidepoint(pos):
+                            set_click_sound_enabled(not click_sound_enabled)
+                            toggle_clicked = True
+                        elif piece_toggle_rect and piece_toggle_rect.collidepoint(pos):
+                            set_piece_sound_enabled(not piece_sound_enabled)
+                            toggle_clicked = True
+                    
+                    # Only close if clicked outside panel (not on toggles)
+                    if not panel_clicked and not toggle_clicked:
+                        settings_open = False
+                    continue
 
                 if winner is not None:
                     if popup_reset_rect and click_button(
@@ -1127,7 +1546,7 @@ def run_pve(screen, ai_level="normal"):
                     board_obj.selected_square = (row, col)
                     valid_moves = get_legal_moves(board_obj, row, col)
                     if len(valid_moves) == 0:
-                        message = f"{piece_name(piece)} không thể đi vì đang bảo vệ vua"
+                        message = "Quân này không có nước đi hợp lệ"
                     else:
                         message = f"Đã chọn {piece_name(piece)}"
                     continue
