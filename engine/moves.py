@@ -17,7 +17,7 @@ def get_valid_moves(board_obj, row, col):
     moves = []
 
     if kind == "P":
-        moves = pawn_moves(board, row, col, color)
+        moves = pawn_moves(board_obj, row, col, color)
     elif kind == "R":
         moves = rook_moves(board, row, col, color)
     elif kind == "N":
@@ -27,12 +27,13 @@ def get_valid_moves(board_obj, row, col):
     elif kind == "Q":
         moves = queen_moves(board, row, col, color)
     elif kind == "K":
-        moves = king_moves(board, row, col, color)
+        moves = king_moves(board_obj, row, col, color)
 
     return moves
 
 
-def pawn_moves(board, row, col, color):
+def pawn_moves(board_obj, row, col, color):
+    board = board_obj.board
     moves = []
     direction = -1 if color == "w" else 1
     start_row = 6 if color == "w" else 1
@@ -54,6 +55,16 @@ def pawn_moves(board, row, col, color):
         nr = row + direction
         if in_bounds(nr, nc) and board[nr][nc] != "--" and board[nr][nc][0] == enemy:
             moves.append((nr, nc))
+
+    # En passant
+    if board_obj.move_log:
+        last_move = board_obj.move_log[-1]
+        if (last_move["moving_piece"] == enemy + "P" and 
+            abs(last_move["start"][0] - last_move["end"][0]) == 2 and
+            last_move["end"][0] == row and
+            abs(last_move["end"][1] - col) == 1):
+            # Can capture en passant
+            moves.append((row + direction, last_move["end"][1]))
 
     return moves
 
@@ -119,7 +130,8 @@ def queen_moves(board, row, col, color):
     return rook_moves(board, row, col, color) + bishop_moves(board, row, col, color)
 
 
-def king_moves(board, row, col, color):
+def king_moves(board_obj, row, col, color):
+    board = board_obj.board
     moves = []
     enemy = "b" if color == "w" else "w"
     directions = [
@@ -133,5 +145,18 @@ def king_moves(board, row, col, color):
         if in_bounds(r, c):
             if board[r][c] == "--" or board[r][c][0] == enemy:
                 moves.append((r, c))
+
+    # Castling
+    if not board_obj.piece_states.get((row, col), {}).get('has_moved', False):
+        # Kingside
+        if (board[row][7] == color + "R" and 
+            not board_obj.piece_states.get((row, 7), {}).get('has_moved', False) and
+            board[row][5] == "--" and board[row][6] == "--"):
+            moves.append((row, 6))
+        # Queenside
+        if (board[row][0] == color + "R" and 
+            not board_obj.piece_states.get((row, 0), {}).get('has_moved', False) and
+            board[row][1] == "--" and board[row][2] == "--" and board[row][3] == "--"):
+            moves.append((row, 2))
 
     return moves

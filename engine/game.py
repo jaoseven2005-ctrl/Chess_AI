@@ -17,7 +17,8 @@ RIGHT_MARGIN = LEFT_MARGIN
 PANEL_W = 180
 GAP = 40
 
-MARGIN = 20
+TOP_MARGIN = 40  # Safe margin from top edge for title bar and DPI scaling
+MARGIN = TOP_MARGIN
 TOP_BAR_HEIGHT = 70
 BOTTOM_BAR_HEIGHT = 65
 
@@ -65,7 +66,7 @@ DARK_TEXT = (245, 245, 245)
 OVERLAY = (0, 0, 0, 90)
 
 SETTINGS_BUTTON_SIZE = 48
-SETTINGS_MARGIN = 16
+SETTINGS_MARGIN = TOP_MARGIN
 SETTINGS_PANEL_SIZE = (320, 240)
 SETTINGS_PANEL_BG = (252, 252, 250)
 SETTINGS_PANEL_BORDER = (204, 211, 196)
@@ -231,6 +232,8 @@ def draw_background_gradient(screen):
         g = int(BG_TOP[1] + (BG_BOTTOM[1] - BG_TOP[1]) * ratio)
         b = int(BG_TOP[2] + (BG_BOTTOM[2] - BG_TOP[2]) * ratio)
         pygame.draw.line(screen, (r, g, b), (0, y), (screen.get_width(), y))
+    # Debug: Draw top margin line
+    pygame.draw.line(screen, (255, 0, 0), (0, TOP_MARGIN), (screen.get_width(), TOP_MARGIN))
 
 
 def draw_piece_shadow(screen, x, y, size):
@@ -1018,11 +1021,123 @@ def update_animation(board_obj, animation, turn_time):
     return True, turn_time, winner, message, check_king_pos
 
 
-def format_time(t):
-    t = max(0, int(t))
-    minutes = t // 60
-    seconds = t % 60
-    return f"{minutes:02}:{seconds:02}"
+def check_game_state(board_obj, player):
+    """
+    Check the current game state for the given player.
+    Returns: "checkmate", "stalemate", or "normal"
+    """
+    color = "w" if player == "white" else "b"
+    in_check = is_in_check(board_obj, color)
+    has_moves = has_any_legal_move(board_obj, color)
+    
+    if in_check and not has_moves:
+        return "checkmate"
+    elif not in_check and not has_moves:
+        return "stalemate"
+    else:
+        return "normal"
+
+
+def can_castle(board, king_pos, rook_pos):
+    """
+    Check if castling is possible between king and rook.
+    king_pos and rook_pos are (row, col) tuples.
+    """
+    kr, kc = king_pos
+    rr, rc = rook_pos
+    if kr != rr:  # Same row
+        return False
+    
+    color = board.board[kr][kc][0]
+    enemy = "b" if color == "w" else "w"
+    
+    # Check if king or rook has moved
+    if (board.piece_states.get(king_pos, {}).get('has_moved', False) or
+        board.piece_states.get(rook_pos, {}).get('has_moved', False)):
+        return False
+    
+    # Check path is clear
+    start_col = min(kc, rc) + 1
+    end_col = max(kc, rc)
+    for c in range(start_col, end_col):
+        if board.board[kr][c] != "--":
+            return False
+    
+    # Check king is not in check
+    if is_in_check(board, color):
+        return False
+    
+    # Check squares king passes through are not attacked
+    king_path = [kc, kc + 1] if rc > kc else [kc, kc - 1, kc - 2]
+    for c in king_path:
+        if c != kc:  # Don't check current position again
+            # Simulate king at this position
+            original_piece = board.board[kr][c]
+            board.board[kr][c] = color + "K"
+            board.board[kr][kc] = "--"
+            attacked = is_square_attacked(board, kr, c, enemy)
+            board.board[kr][c] = original_piece
+            board.board[kr][kc] = color + "K"
+            if attacked:
+                return False
+    
+    return True
+
+
+def handle_en_passant(board, move, last_move):
+    """
+    Handle en passant capture if applicable.
+    Returns True if en passant was performed.
+    """
+    sr, sc = move[0], move[1]
+    er, ec = move[2], move[3]
+    piece = board.board[sr][sc]
+    
+    if (piece[1] == "P" and sc != ec and board.board[er][ec] == "--" and
+        last_move and last_move["moving_piece"][1] == "P" and
+        abs(last_move["start"][0] - last_move["end"][0]) == 2 and
+        last_move["end"][0] == sr and last_move["end"][1] == ec):
+        # Remove the captured pawn
+        captured_row = last_move["end"][0]
+        board.board[captured_row][ec] = "--"
+        if piece[0] == "w":
+            board.captured_black.append("bP")
+        else:
+            board.captured_white.append("wP")
+        return True
+    return False
+
+
+def handle_pawn_promotion(board, pawn_pos):
+    """
+    Handle pawn promotion at the given position.
+    For now, auto-promotes to Queen. 
+    TODO: Add UI popup for player choice, auto-promote for AI.
+    """
+    r, c = pawn_pos
+    piece = board.board[r][c]
+    if piece == "wP" and r == 0:
+        board.board[r][c] = "wQ"
+        return "wQ"
+    elif piece == "bP" and r == 7:
+        board.board[r][c] = "bQ"
+        return "bQ"
+    return None
+
+
+def is_move_safe(board, move, player):
+    """
+    Check if a move is safe (doesn't leave own king in check).
+    move is (start_row, start_col, end_row, end_col)
+    """
+    sr, sc, er, ec = move
+    color = "w" if player == "white" else "b"
+    
+    # Simulate the move
+    temp_board = copy.deepcopy(board)
+    temp_board.move_piece((sr, sc), (er, ec))
+    
+    return not is_in_check(temp_board, color)
 
 
 def run_pvp(screen):
@@ -1572,3 +1687,10 @@ def run_pve(screen, ai_level="normal"):
                     board_obj.selected_square = None
                     valid_moves = []
                     message = "Nước đi không hợp lệ"
+
+
+def format_time(t):
+    t = max(0, int(t))
+    minutes = t // 60
+    seconds = t % 60
+    return f"{minutes:02}:{seconds:02}"
