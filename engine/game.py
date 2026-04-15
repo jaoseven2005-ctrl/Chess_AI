@@ -1,12 +1,14 @@
 import os
 import time
+import math
 import pygame
 import copy
 import threading
 from dataclasses import dataclass
 from engine.board import Board
 from engine.moves import get_valid_moves
-from engine.ai import find_best_move
+from engine.ai import find_best_move, evaluate_board
+from engine.tutor import draw_evaluation_bar
 
 WIDTH = 1120
 HEIGHT = 860
@@ -883,6 +885,136 @@ def get_square_from_mouse(pos):
     return None
 
 
+def get_best_move(board_obj, level="normal"):
+    return find_best_move(board_obj, level)
+
+
+def get_square_rect_from_layout(layout, square):
+    row, col = square
+    return pygame.Rect(
+        layout.board_x + col * layout.square_size,
+        layout.board_y + row * layout.square_size,
+        layout.square_size,
+        layout.square_size,
+    )
+
+
+def normalize_move(move):
+    if move is None:
+        return None
+    if isinstance(move, dict):
+        start = move.get("start") or move.get("start_sq")
+        end = move.get("end") or move.get("end_sq")
+        return (start, end) if start and end else None
+    if hasattr(move, "start_sq") and hasattr(move, "end_sq"):
+        return move.start_sq, move.end_sq
+    if isinstance(move, (tuple, list)) and len(move) == 2:
+        return move[0], move[1]
+    return None
+
+
+def draw_hint_overlay(screen, hint_move, alpha=160, score=None):
+    normalized = normalize_move(hint_move)
+    if not normalized:
+        return
+
+    layout = get_layout(screen)
+    start, end = normalized
+    start_rect = get_square_rect_from_layout(layout, start)
+    end_rect = get_square_rect_from_layout(layout, end)
+    alpha = max(80, min(220, int(alpha)))
+    width = max(3, scaled(4, layout.scale))
+    radius = scaled(10, layout.scale)
+
+    overlay = pygame.Surface((layout.screen_width, layout.screen_height), pygame.SRCALPHA)
+    glow_pad = scaled(8, layout.scale)
+    start_glow = start_rect.inflate(glow_pad * 2, glow_pad * 2)
+    end_glow = end_rect.inflate(glow_pad * 2, glow_pad * 2)
+
+    pygame.draw.rect(overlay, (0, 255, 120, alpha // 3), start_glow, border_radius=radius + glow_pad)
+    pygame.draw.rect(overlay, (255, 220, 80, alpha // 3), end_glow, border_radius=radius + glow_pad)
+    pygame.draw.rect(overlay, (0, 255, 120, min(190, alpha)), start_rect, width, border_radius=radius)
+    pygame.draw.rect(overlay, (255, 220, 80, min(210, alpha)), end_rect, width, border_radius=radius)
+
+    start_point = pygame.Vector2(start_rect.center)
+    end_point = pygame.Vector2(end_rect.center)
+    direction = end_point - start_point
+    if direction.length_squared() > 0:
+        direction = direction.normalize()
+        arrow_start = start_point + direction * (layout.square_size * 0.22)
+        arrow_end = end_point - direction * (layout.square_size * 0.22)
+        arrow_color = (24, 93, 78, min(230, alpha + 35))
+        pygame.draw.line(overlay, arrow_color, arrow_start, arrow_end, width)
+
+        head_size = max(10, scaled(16, layout.scale))
+        left = arrow_end - direction.rotate(28) * head_size
+        right = arrow_end - direction.rotate(-28) * head_size
+        pygame.draw.polygon(overlay, arrow_color, [arrow_end, left, right])
+
+    screen.blit(overlay, (0, 0))
+
+    if score is not None:
+        score_text = f"{score:+.1f}"
+        font = get_font(scaled(14, layout.scale))
+        surface = font.render(score_text, True, (34, 72, 54))
+        label_rect = surface.get_rect(center=(end_rect.centerx, end_rect.y + scaled(14, layout.scale)))
+        bg_rect = label_rect.inflate(scaled(12, layout.scale), scaled(6, layout.scale))
+        pygame.draw.rect(screen, (248, 249, 244), bg_rect, border_radius=bg_rect.height // 2)
+        pygame.draw.rect(screen, (24, 132, 86), bg_rect, 1, border_radius=bg_rect.height // 2)
+        screen.blit(surface, label_rect)
+
+def draw_hint_control(screen, active=False, thinking=False):
+    layout = get_layout(screen)
+    rect = pygame.Rect(
+        layout.right_panel_rect.x,
+        layout.bottom_bar_rect.y,
+        layout.right_panel_rect.width,
+        layout.bottom_bar_rect.height,
+    )
+    mouse_pos = pygame.mouse.get_pos()
+    hover = rect.collidepoint(mouse_pos)
+    fill = (228, 247, 235) if active else (248, 249, 244)
+    if hover:
+        fill = (238, 248, 240)
+    border = (24, 132, 86) if active else (214, 225, 199)
+
+    draw_panel_card(screen, rect, scaled(16, layout.scale), fill=fill, border=border, shadow_alpha=18)
+    label = "Đang nghĩ..." if thinking else "Gợi ý (H)"
+    color = (24, 105, 72) if active else TEXT
+    draw_text(screen, label, scaled(18, layout.scale), color, rect.centerx, rect.centery, center=True)
+    return rect
+
+
+def draw_blunder_warning(screen, blunder_move, score_before=None, score_after=None):
+    layout = get_layout(screen)
+    normalized = normalize_move(blunder_move)
+    if normalized:
+        for square in normalized:
+            rect = get_square_rect_from_layout(layout, square)
+            overlay = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+            pygame.draw.rect(overlay, (235, 58, 58, 72), overlay.get_rect(), border_radius=scaled(10, layout.scale))
+            screen.blit(overlay, rect.topleft)
+            pygame.draw.rect(screen, (230, 35, 35), rect.inflate(-4, -4), max(3, scaled(4, layout.scale)), border_radius=scaled(10, layout.scale))
+
+    warning_w = min(layout.board_rect.width - scaled(32, layout.scale), scaled(420, layout.scale))
+    warning_h = scaled(54, layout.scale)
+    warning_rect = pygame.Rect(
+        layout.board_rect.centerx - warning_w // 2,
+        layout.board_rect.y + scaled(14, layout.scale),
+        warning_w,
+        warning_h,
+    )
+    draw_panel_card(screen, warning_rect, scaled(14, layout.scale), fill=(255, 244, 240), border=(222, 90, 82), shadow_alpha=28)
+    pygame.draw.circle(screen, (220, 44, 44), (warning_rect.x + scaled(28, layout.scale), warning_rect.centery), scaled(16, layout.scale))
+    draw_text(screen, "?", scaled(24, layout.scale), (255, 255, 255), warning_rect.x + scaled(28, layout.scale), warning_rect.centery - scaled(1, layout.scale), center=True)
+
+    if score_before is not None and score_after is not None:
+        detail = f"{score_before:+.1f} -> {score_after:+.1f}"
+    else:
+        detail = "Mất lợi thế"
+    draw_text(screen, "Nước đi này khiến bạn mất lợi thế!", scaled(16, layout.scale), (116, 36, 32), warning_rect.x + scaled(54, layout.scale), warning_rect.y + scaled(13, layout.scale))
+    draw_text(screen, detail, scaled(13, layout.scale), (142, 66, 58), warning_rect.x + scaled(54, layout.scale), warning_rect.y + scaled(32, layout.scale))
+
 def find_king(board_obj, color):
     king = color + "K"
     for row in range(8):
@@ -1377,6 +1509,10 @@ def run_pvp(screen):
                     message = 'Nước đi không hợp lệ'
 
 
+
+BLUNDER_THRESHOLD = 0.8
+EVAL_BAR_VISUAL_SCALE = 3.0
+
 def run_pve(screen, ai_level='normal'):
     clock = pygame.time.Clock()
     board_obj = Board()
@@ -1392,6 +1528,22 @@ def run_pve(screen, ai_level='normal'):
     winner = None
     check_king_pos = None
 
+    ai_score = evaluate_board(board_obj, ai_level)
+    display_score = ai_score
+    pending_blunder_prev_score = None
+    is_blunder = False
+    blunder_timer = 0.0
+    blunder_move = None
+    blunder_score_before = None
+    blunder_score_after = None
+
+    show_hint = False
+    hint_timer = 0.0
+    hint_move = None
+    hint_score = None
+    hint_thinking = False
+    last_hint_board = None
+
     human_color = 'w'
     ai_color = 'b'
 
@@ -1406,6 +1558,10 @@ def run_pve(screen, ai_level='normal'):
     ai_lock = threading.Lock()
     ai_task_id = {'current': 0}
 
+    hint_move_result = {'move': None, 'score': None, 'done': False}
+    hint_lock = threading.Lock()
+    hint_task_id = {'current': 0}
+
     def ai_worker(board_snapshot, level, task_id):
         start_time = time.time()
         move = find_best_move(board_snapshot, level)
@@ -1418,6 +1574,94 @@ def run_pve(screen, ai_level='normal'):
                 return
             ai_move_result['move'] = move
 
+    def hint_worker(board_snapshot, task_id):
+        start_time = time.time()
+        move = None
+        score = None
+        try:
+            move = find_best_move(board_snapshot, "hard")
+            if move is not None:
+                score_board = copy.deepcopy(board_snapshot)
+                score_board.move_piece(move[0], move[1])
+                score = evaluate_board(score_board, "hard")
+                if human_color == 'b':
+                    score = -score
+        except Exception:
+            move = None
+            score = None
+
+        elapsed = time.time() - start_time
+        min_time = 0.4
+        if elapsed < min_time:
+            time.sleep(min_time - elapsed)
+
+        with hint_lock:
+            if task_id != hint_task_id['current']:
+                return
+            hint_move_result['move'] = move
+            hint_move_result['score'] = score
+            hint_move_result['done'] = True
+
+    def request_hint():
+        nonlocal hint_thinking, show_hint, hint_timer, hint_move, hint_score, last_hint_board, message
+        if show_hint and hint_move is not None and not hint_thinking:
+            show_hint = False
+            hint_timer = 0.0
+            message = 'Đã tắt gợi ý'
+            return
+        if winner is not None or animation['active'] or ai_thinking or hint_thinking:
+            return
+        if ('w' if board_obj.white_to_move else 'b') != human_color:
+            return
+
+        board_state = str(board_obj.board) + str(board_obj.white_to_move)
+        if board_state == last_hint_board and hint_move is not None:
+            show_hint = True
+            hint_timer = 0.0
+            message = 'Đã hiển thị lại gợi ý đã lưu'
+            return
+
+        hint_thinking = True
+        show_hint = False
+        hint_move = None
+        hint_score = None
+        hint_timer = 0.0
+        last_hint_board = board_state
+        message = 'Đang tính gợi ý mạnh...'
+
+        with hint_lock:
+            hint_task_id['current'] += 1
+            current_task_id = hint_task_id['current']
+            hint_move_result['move'] = None
+            hint_move_result['score'] = None
+            hint_move_result['done'] = False
+
+        board_snapshot = copy.deepcopy(board_obj)
+        threading.Thread(target=hint_worker, args=(board_snapshot, current_task_id), daemon=True).start()
+
+    def clear_tutor_ui_state():
+        nonlocal show_hint, hint_timer, hint_move, hint_score, hint_thinking, last_hint_board
+        nonlocal is_blunder, blunder_timer, blunder_move, blunder_score_before, blunder_score_after
+
+        show_hint = False
+        hint_timer = 0.0
+        hint_move = None
+        hint_score = None
+        hint_thinking = False
+        last_hint_board = None
+
+        is_blunder = False
+        blunder_timer = 0.0
+        blunder_move = None
+        blunder_score_before = None
+        blunder_score_after = None
+
+        with hint_lock:
+            hint_task_id['current'] += 1
+            hint_move_result['move'] = None
+            hint_move_result['score'] = None
+            hint_move_result['done'] = False
+
     while True:
         layout = get_layout(screen)
         load_images(layout)
@@ -1426,10 +1670,23 @@ def run_pve(screen, ai_level='normal'):
         draw_background_gradient(screen)
         current_color = 'w' if board_obj.white_to_move else 'b'
         current_name = 'Trắng' if current_color == 'w' else 'Đen'
+        move_made = False
 
         now = pygame.time.get_ticks()
         delta = (now - last_tick) / 1000
         last_tick = now
+
+        if show_hint or hint_move is not None or hint_thinking:
+            hint_timer += delta
+
+        if is_blunder:
+            blunder_timer += delta
+            if blunder_timer > 3.0:
+                is_blunder = False
+                blunder_timer = 0.0
+                blunder_move = None
+                blunder_score_before = None
+                blunder_score_after = None
 
         if winner is None and not animation['active']:
             total_game_time += delta
@@ -1443,15 +1700,34 @@ def run_pve(screen, ai_level='normal'):
                 check_king_pos = new_check_king_pos
                 valid_moves = []
                 ai_turn_started_at = None
+                move_made = True
 
         current_color = 'w' if board_obj.white_to_move else 'b'
         current_name = 'Trắng' if current_color == 'w' else 'Đen'
 
+        if move_made:
+            ai_score = evaluate_board(board_obj, ai_level)
+            display_score = ai_score
+            last_move = board_obj.move_log[-1] if board_obj.move_log else None
+            if last_move and last_move.get('moving_piece', '--')[0] == human_color and pending_blunder_prev_score is not None:
+                score_before = pending_blunder_prev_score
+                score_after = ai_score
+                human_before = score_before if human_color == 'w' else -score_before
+                human_after = score_after if human_color == 'w' else -score_after
+                score_drop = human_before - human_after
+
+                if score_drop > BLUNDER_THRESHOLD:
+                    is_blunder = True
+                    blunder_timer = 0.0
+                    blunder_move = (last_move['start'], last_move['end'])
+                    blunder_score_before = human_before
+                    blunder_score_after = human_after
+                    message = 'Nước đi này khiến bạn mất lợi thế!'
+
+                pending_blunder_prev_score = None
+
         if winner is None and not animation['active'] and turn_time <= 0:
-            if current_color == ai_color:
-                winner = 'Trắng' if ai_color == 'b' else 'Đen'
-            else:
-                winner = 'Đen' if human_color == 'w' else 'Trắng'
+            winner = 'Trắng' if current_color == ai_color else 'Đen'
             message = f'Hết thời gian! {winner} thắng'
             ai_thinking = False
             ai_turn_started_at = None
@@ -1473,11 +1749,10 @@ def run_pve(screen, ai_level='normal'):
                     winner = 'Hòa'
                     message = 'HẾT NƯỚC ĐI! Kết quả hòa'
                 elif current_color == ai_color:
-                    message = 'Máy đang suy nghĩ...' if ai_thinking else 'Máy chuẩn bị suy nghĩ...'
-                else:
-                    ai_turn_started_at = None
-                    if board_obj.selected_square is None:
-                        message = f'Lượt: {current_name}'
+                    if not is_blunder:
+                        message = 'Máy đang suy nghĩ...' if ai_thinking else 'Máy chuẩn bị suy nghĩ...'
+                elif board_obj.selected_square is None:
+                    message = f'Lượt: {current_name}'
 
         if winner is None and not animation['active'] and current_color == ai_color:
             if not ai_thinking:
@@ -1504,12 +1779,59 @@ def run_pve(screen, ai_level='normal'):
                     message = 'Máy đang di chuyển...'
                     ai_turn_started_at = None
 
+        with hint_lock:
+            hint_done = hint_move_result.get('done', False)
+            computed_hint_move = hint_move_result.get('move')
+            computed_hint_score = hint_move_result.get('score')
+            if hint_done:
+                hint_move_result['done'] = False
+                hint_move_result['move'] = None
+                hint_move_result['score'] = None
+
+        if hint_done:
+            hint_thinking = False
+            hint_move = computed_hint_move
+            hint_score = computed_hint_score
+            show_hint = hint_move is not None
+            hint_timer = 0.0
+            message = 'Đã hiển thị gợi ý nước đi tốt nhất' if show_hint else 'Không có nước gợi ý hợp lệ'
+
+        display_score = display_score * 0.75 + ai_score * 0.25
+
         reset_rect, home_rect = draw_top_bar(screen, board_obj.white_to_move, turn_time, total_game_time, ai_level)
         hover_square = get_square_from_mouse(pygame.mouse.get_pos())
-        draw_settings_button(screen, settings_button_rect, settings_button_rect.collidepoint(pygame.mouse.get_pos()), settings_button_rect.collidepoint(pygame.mouse.get_pos()) and pygame.mouse.get_pressed()[0])
+        draw_settings_button(
+            screen,
+            settings_button_rect,
+            settings_button_rect.collidepoint(pygame.mouse.get_pos()),
+            settings_button_rect.collidepoint(pygame.mouse.get_pos()) and pygame.mouse.get_pressed()[0],
+        )
         draw_side_panels(screen, board_obj)
         draw_board(screen, board_obj, valid_moves, check_king_pos, animation, hover_square)
+
+        bar_width = max(14, scaled(18, layout.scale))
+        visual_score = max(-10.0, min(10.0, display_score * EVAL_BAR_VISUAL_SCALE))
+        draw_evaluation_bar(
+            screen,
+            visual_score,
+            layout.board_rect.right + scaled(10, layout.scale),
+            layout.board_rect.y,
+            bar_width,
+            layout.board_rect.height,
+            white_color=(248, 248, 244),
+            black_color=(54, 64, 58),
+            border_color=(37, 47, 41),
+        )
+
+        if show_hint and hint_move:
+            hint_alpha = int(120 + 80 * math.sin(hint_timer * 4))
+            draw_hint_overlay(screen, hint_move, hint_alpha, hint_score)
+
+        if is_blunder:
+            draw_blunder_warning(screen, blunder_move, blunder_score_before, blunder_score_after)
+
         draw_bottom_bar(screen, message)
+        hint_button_rect = draw_hint_control(screen, active=show_hint or hint_thinking, thinking=hint_thinking)
 
         panel_rect = None
         if settings_open:
@@ -1526,14 +1848,21 @@ def run_pve(screen, ai_level='normal'):
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return 'quit'
-            if event.type == pygame.KEYDOWN and event.key == pygame.K_F11:
-                screen = toggle_fullscreen()
-                last_tick = pygame.time.get_ticks()
-                break
+
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_F11:
+                    screen = toggle_fullscreen()
+                    last_tick = pygame.time.get_ticks()
+                    break
+                if event.key == pygame.K_h:
+                    request_hint()
+                    continue
+
             if event.type == pygame.VIDEORESIZE:
                 screen = handle_resize(event)
                 last_tick = pygame.time.get_ticks()
                 break
+
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 play_click_sound()
                 pos = event.pos
@@ -1572,9 +1901,17 @@ def run_pve(screen, ai_level='normal'):
                         with ai_lock:
                             ai_task_id['current'] += 1
                             ai_move_result['move'] = None
+                        ai_score = evaluate_board(board_obj, ai_level)
+                        display_score = ai_score
+                        pending_blunder_prev_score = None
+                        clear_tutor_ui_state()
                         continue
                     if popup_home_rect and click_button(pos, popup_home_rect.x, popup_home_rect.y, popup_home_rect.width, popup_home_rect.height):
                         return 'menu'
+                    continue
+
+                if hint_button_rect.collidepoint(pos):
+                    request_hint()
                     continue
 
                 if click_button(pos, reset_rect.x, reset_rect.y, reset_rect.width, reset_rect.height):
@@ -1592,12 +1929,18 @@ def run_pve(screen, ai_level='normal'):
                     with ai_lock:
                         ai_task_id['current'] += 1
                         ai_move_result['move'] = None
+                    ai_score = evaluate_board(board_obj, ai_level)
+                    display_score = ai_score
+                    pending_blunder_prev_score = None
+                    clear_tutor_ui_state()
                     continue
 
                 if click_button(pos, home_rect.x, home_rect.y, home_rect.width, home_rect.height):
                     return 'menu'
+
                 if animation['active'] or ai_thinking:
                     continue
+
                 if ('w' if board_obj.white_to_move else 'b') != human_color:
                     continue
 
@@ -1607,16 +1950,17 @@ def run_pve(screen, ai_level='normal'):
 
                 row, col = square
                 piece = board_obj.get_piece(row, col)
+
                 if board_obj.selected_square is None:
                     if piece == '--':
-                        message = '? n?y ?ang tr?ng'
+                        message = 'Ô này đang trống'
                         continue
                     if piece[0] != human_color:
-                        message = '?ang t?i l??t c?a b?n'
+                        message = 'Đang tới lượt của bạn'
                         continue
                     board_obj.selected_square = (row, col)
                     valid_moves = get_legal_moves(board_obj, row, col)
-                    message = 'Qu?n n?y kh?ng c? n??c ?i h?p l?' if len(valid_moves) == 0 else f'?? ch?n {piece_name(piece)}'
+                    message = 'Quân này không có nước đi hợp lệ' if len(valid_moves) == 0 else f'Đã chọn {piece_name(piece)}'
                     continue
 
                 start_square = board_obj.selected_square
@@ -1625,20 +1969,22 @@ def run_pve(screen, ai_level='normal'):
                     if piece[0] == selected_piece[0]:
                         board_obj.selected_square = (row, col)
                         valid_moves = get_legal_moves(board_obj, row, col)
-                        message = f'??i ch?n sang {piece_name(piece)}'
+                        message = f'Đổi chọn sang {piece_name(piece)}'
                         continue
 
                 if (row, col) in valid_moves:
+                    pending_blunder_prev_score = evaluate_board(board_obj, ai_level)
+                    clear_tutor_ui_state()
                     start_animation(animation, board_obj, start_square, (row, col))
                     turn_time = 600
                     board_obj.selected_square = None
                     valid_moves = []
-                    message = f"{piece_name(animation['piece'])} ?ang di chuy?n..."
+                    message = f"{piece_name(animation['piece'])} đang di chuyển..."
                     ai_turn_started_at = None
                 else:
                     board_obj.selected_square = None
                     valid_moves = []
-                    message = 'N??c ?i kh?ng h?p l?'
+                    message = 'Nước đi không hợp lệ'
 
 def format_time(t):
     t = max(0, int(t))

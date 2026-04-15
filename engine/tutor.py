@@ -82,41 +82,45 @@ def sigmoid(x, steepness=0.5):
 # ============================================================================
 
 def draw_evaluation_bar(screen, ai_score, bar_x, bar_y, bar_width, bar_height,
-                        white_color=(234, 240, 225), black_color=(100, 120, 100),
-                        border_color=(45, 60, 45)):
-    """
-    Draw evaluation bar showing position assessment (white ratio vs black ratio).
-    
-    Args:
-        screen: pygame surface
-        ai_score: float (-10 to +10), positive = white advantage
-        bar_x, bar_y: top-left position
-        bar_width, bar_height: dimensions
-        white_color, black_color: RGB tuples
-        border_color: RGB tuple for border
-    """
-    # Clamp score to reasonable range
+                        white_color=(255,255,255), black_color=(40,40,40),
+                        border_color=(120,120,120)):
+
+    # 🔒 Clamp score
     clamped_score = max(-10.0, min(10.0, ai_score))
-    
-    # Convert score to white ratio using smooth sigmoid
-    white_ratio = sigmoid(clamped_score, steepness=0.4)
-    
-    # Calculate split height
+
+    # 🔥 Tăng độ nhạy (QUAN TRỌNG)
+    VISUAL_SCALE = 3.0
+    adjusted_score = clamped_score * VISUAL_SCALE
+
+    # Sigmoid mạnh hơn
+    white_ratio = 1 / (1 + math.exp(-0.8 * adjusted_score))
+
     white_height = int(bar_height * white_ratio)
     black_height = bar_height - white_height
-    
-    # Draw white section (top)
-    white_rect = pygame.Rect(bar_x, bar_y, bar_width, white_height)
-    pygame.draw.rect(screen, white_color, white_rect)
-    
-    # Draw black section (bottom)
-    black_rect = pygame.Rect(bar_x, bar_y + white_height, bar_width, black_height)
+
+    # 🔥 ĐẢO CHIỀU
+
+    # 🔝 ĐEN ở trên
+    black_rect = pygame.Rect(bar_x, bar_y, bar_width, black_height)
     pygame.draw.rect(screen, black_color, black_rect)
-    
-    # Draw border
+
+    # 🔻 TRẮNG ở dưới
+    white_rect = pygame.Rect(bar_x, bar_y + black_height, bar_width, white_height)
+    pygame.draw.rect(screen, white_color, white_rect)
+
+    # Viền
     full_rect = pygame.Rect(bar_x, bar_y, bar_width, bar_height)
     pygame.draw.rect(screen, border_color, full_rect, 2, border_radius=4)
-    
+
+    # 🎯 Line giữa (dễ nhìn hơn)
+    pygame.draw.line(
+        screen,
+        (150,150,150),
+        (bar_x, bar_y + bar_height // 2),
+        (bar_x + bar_width, bar_y + bar_height // 2),
+        2
+    )
+
     return white_rect, black_rect
 
 
