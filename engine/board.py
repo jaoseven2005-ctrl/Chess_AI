@@ -40,7 +40,6 @@ class Board:
 
         moving_piece = self.board[sr][sc]
         target_piece = self.board[er][ec]
-        promoted_from = None
         castling = False
         en_passant = False
 
@@ -91,28 +90,19 @@ class Board:
         if castling:
             rook_has_moved_before = self.piece_states.get(rook_start, {}).get('has_moved', False)
 
-        # Check for pawn promotion (auto-promote to Queen for now)
-        if moving_piece == "wP" and er == 0:
-            promoted_from = "wP"
-            self.board[er][ec] = "wQ"
-        elif moving_piece == "bP" and er == 7:
-            promoted_from = "bP"
-            self.board[er][ec] = "bQ"
+        # Pawn promotion will be handled in game.py after move
 
         self.move_log.append({
             "start": start,
             "end": end,
             "moving_piece": moving_piece,
             "target_piece": target_piece,
-            "promoted_from": promoted_from,
             "castling": castling,
             "en_passant": en_passant,
             "has_moved_before": has_moved_before,
             "rook_has_moved_before": rook_has_moved_before,
         })
         self.white_to_move = not self.white_to_move
-
-        return promoted_from
 
     def make_move(self, start, end):
         self.move_piece(start, end)
@@ -126,7 +116,6 @@ class Board:
         (er, ec) = last_move["end"]
         moving_piece = last_move["moving_piece"]
         target_piece = last_move["target_piece"]
-        promoted_from = last_move.get("promoted_from")
         castling = last_move.get("castling", False)
         en_passant = last_move.get("en_passant", False)
         has_moved_before = last_move.get("has_moved_before", False)
@@ -171,8 +160,7 @@ class Board:
             elif target_piece[0] == "b" and self.captured_black:
                 self.captured_black.pop()
 
-        if promoted_from:
-            self.board[er][ec] = promoted_from
+        # Promotion handled in game.py
 
         self.white_to_move = not self.white_to_move
         self.selected_square = None
