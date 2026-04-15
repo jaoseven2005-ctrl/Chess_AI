@@ -1,343 +1,367 @@
 # engine/tutor.py
-# AI Tutor - Evaluation Bar, Hint System, Threading Support
+# AI Tutor - Professional evaluation, hints, move classification, and blunder detection
 
-import random
 import time
 import copy
 import threading
 import math
 import pygame
+from engine.ai import find_best_move, score_board
 
-# ============================================================================
-# PART 1: AI Mock Function (Replace this with real Minimax later)
-# ============================================================================
-
-def get_best_move_and_score(board_obj, current_turn):
-    """
-    Simulate AI evaluation and best move suggestion.
-    
-    Args:
-        board_obj: Board object
-        current_turn: "w" for white, "b" for black
-    
-    Returns:
-        tuple: (best_move, ai_score)
-        - best_move: ((from_row, from_col), (to_row, to_col)) or None
-        - ai_score: float between -10.0 and +10.0
-    
-    TODO: Replace with real Minimax/Alpha-Beta implementation
-    """
-    from engine.moves import get_valid_moves
-    
-    # Collect all legal moves
-    all_moves = []
-    for r in range(8):
-        for c in range(8):
-            piece = board_obj.board[r][c]
-            # Only consider pieces of current turn color
-            if piece != "--" and piece[0] == current_turn:
-                moves = get_valid_moves(board_obj, r, c)
-                for move in moves:
-                    all_moves.append(((r, c), move))
-    
-    if not all_moves:
-        return None, 0.0
-    
-    # Pick a random move (placeholder)
-    best_move = random.choice(all_moves)
-    
-    # Simulate score: random value between -10 and +10
-    # Bias slightly towards positive if white's turn
-    if current_turn == "w":
-        ai_score = random.uniform(-3.0, 8.0)
-    else:
-        ai_score = random.uniform(-8.0, 3.0)
-    
-    return best_move, ai_score
+# Time budgets for analysis
+ANALYSIS_TIME_LIMIT = 0.45
+HINT_TIME_LIMIT = 0.80
+CACHE_MAX_ENTRIES = 128
 
 
-# ============================================================================
-# PART 2: Sigmoid-like function to smooth score-to-pixel conversion
-# ============================================================================
+def clamp_score(score):
+    try:
+        return max(-10.0, min(10.0, float(score)))
+    except Exception:
+        return 0.0
 
-def sigmoid(x, steepness=0.5):
-    """
-    Smooth sigmoid function to convert score (-10..+10) to ratio (0..1).
-    
-    Args:
-        x: Score value (-10 to +10)
-        steepness: Controls curve steepness (default 0.5)
-    
-    Returns:
-        float: Ratio from 0 to 1
-    """
+
+def format_score_text(score):
+    return f"{'+' if score >= 0 else ''}{score:.1f}"
+
+
+def sigmoid(x, steepness=0.8):
     try:
         return 1.0 / (1.0 + math.exp(-steepness * x))
-    except:
+    except Exception:
         return 0.5
 
 
-# ============================================================================
-# PART 3: Evaluation Bar Drawing
-# ============================================================================
-
-def draw_evaluation_bar(screen, ai_score, bar_x, bar_y, bar_width, bar_height,
-                        white_color=(255,255,255), black_color=(40,40,40),
-                        border_color=(120,120,120)):
-
-    # 🔒 Clamp score
-    clamped_score = max(-10.0, min(10.0, ai_score))
-
-    # 🔥 Tăng độ nhạy (QUAN TRỌNG)
-    VISUAL_SCALE = 3.0
-    adjusted_score = clamped_score * VISUAL_SCALE
-
-    # Sigmoid mạnh hơn
-    white_ratio = 1 / (1 + math.exp(-0.8 * adjusted_score))
-
-    white_height = int(bar_height * white_ratio)
-    black_height = bar_height - white_height
-
-    # 🔥 ĐẢO CHIỀU
-
-    # 🔝 ĐEN ở trên
-    black_rect = pygame.Rect(bar_x, bar_y, bar_width, black_height)
-    pygame.draw.rect(screen, black_color, black_rect)
-
-    # 🔻 TRẮNG ở dưới
-    white_rect = pygame.Rect(bar_x, bar_y + black_height, bar_width, white_height)
-    pygame.draw.rect(screen, white_color, white_rect)
-
-    # Viền
-    full_rect = pygame.Rect(bar_x, bar_y, bar_width, bar_height)
-    pygame.draw.rect(screen, border_color, full_rect, 2, border_radius=4)
-
-    # 🎯 Line giữa (dễ nhìn hơn)
-    pygame.draw.line(
-        screen,
-        (150,150,150),
-        (bar_x, bar_y + bar_height // 2),
-        (bar_x + bar_width, bar_y + bar_height // 2),
-        2
-    )
-
-    return white_rect, black_rect
+def compute_board_score(board_obj):
+    return clamp_score(score_board(board_obj))
 
 
-# ============================================================================
-# PART 4: Hint System Drawing
-# ============================================================================
+def simulate_move_score(board_obj, move):
+    if move is None:
+        return compute_board_score(board_obj)
 
-def draw_hint_button(screen, btn_rect, hover=False):
-    """
-    Draw minimalist hint button.
-    
-    Args:
-        screen: pygame surface
-        btn_rect: pygame.Rect for button
-        hover: boolean, True if mouse hovering
-    
-    Returns:
-        button rectangle
-    """
-    # Button styling
-    bg_color = (240, 245, 238) if hover else (250, 252, 248)  # Cream/white
-    border_color = (45, 60, 45)  # Dark text (**NOT** hover color)
-    text_color = (45, 60, 45)
-    
-    # Draw background
-    pygame.draw.rect(screen, bg_color, btn_rect, border_radius=12)
-    
-    # Draw border
-    border_width = 2 if hover else 1
-    pygame.draw.rect(screen, border_color, btn_rect, border_width, border_radius=12)
-    
-    # Draw text (using font from game module)
-    # We'll return and let caller handle text rendering via get_font
-    
-    return btn_rect
+    snapshot = copy.deepcopy(board_obj)
+    snapshot.move_piece(move[0], move[1])
+    return compute_board_score(snapshot)
 
 
-def draw_hint_highlight(screen, start_pos, end_pos, sq_size, board_x, board_y,
-                        highlight_color=(255, 255, 153, 100)):
-    """
-    Draw semi-transparent highlight on source and destination squares for hint.
-    
-    Args:
-        screen: pygame surface
-        start_pos: (row, col) source square
-        end_pos: (row, col) destination square
-        sq_size: size of one square in pixels
-        board_x, board_y: board top-left position
-        highlight_color: RGBA tuple
-    """
-    # Create transparent surface
-    highlight_surface = pygame.Surface((sq_size, sq_size), pygame.SRCALPHA)
-    pygame.draw.rect(highlight_surface, highlight_color, highlight_surface.get_rect(), border_radius=8)
-    
-    # Draw on source square
-    sr, sc = start_pos
-    screen.blit(highlight_surface, (board_x + sc * sq_size, board_y + sr * sq_size))
-    
-    # Draw on destination square
-    er, ec = end_pos
-    screen.blit(highlight_surface, (board_x + ec * sq_size, board_y + er * sq_size))
+def classify_player_move(tutor_state, actual_move, moved_color, current_score):
+    if actual_move is None or tutor_state["best_move"] is None:
+        return None
+
+    best_move = tutor_state["best_move"]
+    best_move_score = tutor_state.get("best_move_score")
+
+    if actual_move == best_move:
+        return "Best Move"
+
+    if best_move_score is not None and current_score >= best_move_score + 0.7:
+        return "Brilliant"
+
+    return None
 
 
-# ============================================================================
-# PART 5: Threading Worker & State Management
-# ============================================================================
+def detect_blunder(prev_score, current_score, moved_color):
+    if prev_score is None or current_score is None:
+        return None, 0.0
 
-def tutor_ai_worker(board_snapshot, is_white_turn, result_dict, lock, task_id, task_id_holder):
-    """
-    Worker thread for computing best move and evaluation score.
-    
-    Args:
-        board_snapshot: deep copy of board
-        is_white_turn: boolean
-        result_dict: shared dict to store {"move": ..., "score": ...}
-        lock: threading lock
-        task_id: current task ID for cancellation checking
-        task_id_holder: dict with {"current": ...} current task
-    """
+    human_before = prev_score if moved_color == "w" else -prev_score
+    human_after = current_score if moved_color == "w" else -current_score
+    score_drop = (human_before - human_after) * 3
+
+    if score_drop < 0.5:
+        return "Best", score_drop
+    if score_drop < 1.5:
+        return "Inaccuracy", score_drop
+    if score_drop < 3.0:
+        return "Mistake", score_drop
+    return "Blunder", score_drop
+
+
+def initialize_tutor_state():
+    return {
+        "ai_score": 0.0,
+        "display_score": 0.0,
+        "prev_score": None,
+        "best_move": None,
+        "best_move_score": None,
+        "hint_setup": False,
+        "hint_toggle": False,
+        "show_hint": False,
+        "is_computing": False,
+        "hint_ready": False,
+        "is_hint_requested": False,
+        "last_board_hash": None,
+        "cache": {},
+        "result": {},
+        "task_id_holder": {"current": 0},
+        "lock": threading.Lock(),
+        "blunder_type": None,
+        "blunder_detail": "",
+        "blunder_cooldown_end": 0.0,
+        "is_blunder": False,
+        "move_classification": None,
+        "last_move_squares": None,
+    }
+
+
+def update_display_score(tutor_state):
+    target = tutor_state.get("ai_score", 0.0)
+    display = tutor_state.get("display_score", target)
+    display = display * 0.85 + target * 0.15
+    if abs(display - target) < 0.02:
+        display = target
+    tutor_state["display_score"] = display
+    return display
+
+
+def store_cache(tutor_state, board_hash, data):
+    if not board_hash:
+        return
+    tutor_state["cache"][board_hash] = data
+    if len(tutor_state["cache"]) > CACHE_MAX_ENTRIES:
+        oldest = next(iter(tutor_state["cache"]))
+        tutor_state["cache"].pop(oldest, None)
+
+
+def tutor_ai_worker(board_snapshot, is_white_turn, result_dict, lock, task_id, task_id_holder, hint_requested=False):
     try:
-        current_turn = "w" if is_white_turn else "b"
-        best_move, ai_score = get_best_move_and_score(board_snapshot, current_turn)
-        
-        # Check if task was cancelled while computing
+        board_snapshot.white_to_move = is_white_turn
+        level = "hard" if hint_requested else "normal"
+        time_limit = HINT_TIME_LIMIT if hint_requested else ANALYSIS_TIME_LIMIT
+        best_move = find_best_move(board_snapshot, level=level, time_limit=time_limit)
+        score = compute_board_score(board_snapshot)
+        best_score = simulate_move_score(board_snapshot, best_move) if best_move else score
+
+        board_hash = (tuple(tuple(row) for row in board_snapshot.board), board_snapshot.white_to_move)
+
         with lock:
             if task_id != task_id_holder.get("current"):
                 return
-            result_dict["move"] = best_move
-            result_dict["score"] = ai_score
+            result_dict.update({
+                "move": best_move,
+                "score": score,
+                "best_move_score": best_score,
+                "hint_requested": hint_requested,
+                "board_hash": board_hash,
+            })
     except Exception as e:
         print(f"ERROR in tutor_ai_worker: {e}")
 
 
-def update_tutor_state(tutor_state, current_board, board_obj, hint_requested=False):
-    """
-    Safely update tutor state via threading.
-    Called when:
-    - Game starts / board changes
-    - User requests hint (H key)
-    - Player makes a move (to check for blundle)
-    
-    Args:
-        tutor_state: dict with tutor state
-        current_board: board to analyze
-        board_obj: for getting white_to_move
-        hint_requested: boolean, force hint calculation
-    """
-    # Prevent overlapping threads
+def update_tutor_state(tutor_state, current_board, hint_requested=False, force=False):
+    board_hash = (tuple(tuple(row) for row in current_board.board), current_board.white_to_move)
+    if not force and tutor_state.get("last_board_hash") == board_hash and not hint_requested:
+        return
+
+    if tutor_state["is_computing"]:
+        return
+
+    cached = tutor_state["cache"].get(board_hash)
+    if cached and (not hint_requested or cached.get("search_level") == "hard"):
+        tutor_state["best_move"] = cached.get("move")
+        tutor_state["best_move_score"] = cached.get("best_move_score")
+        tutor_state["ai_score"] = cached.get("score", tutor_state.get("ai_score", 0.0))
+        tutor_state["last_board_hash"] = board_hash
+        tutor_state["hint_ready"] = hint_requested
+        tutor_state["show_hint"] = hint_requested
+        tutor_state["is_hint_requested"] = hint_requested
+        return
+
     with tutor_state["lock"]:
-        if tutor_state["is_computing"] and not hint_requested:
-            return  # Already computing
-        
         tutor_state["is_computing"] = True
         tutor_state["hint_ready"] = False
         tutor_state["is_hint_requested"] = hint_requested
-        
-        # Increment task ID to cancel previous task
         tutor_state["task_id_holder"]["current"] += 1
-        current_task_id = tutor_state["task_id_holder"]["current"]
-    
-    # Spawn thread (non-blocking)
+        task_id = tutor_state["task_id_holder"]["current"]
+
     board_snapshot = copy.deepcopy(current_board)
-    is_white = current_board.white_to_move
-    
     thread = threading.Thread(
         target=tutor_ai_worker,
         args=(
             board_snapshot,
-            is_white,
+            current_board.white_to_move,
             tutor_state["result"],
             tutor_state["lock"],
-            current_task_id,
-            tutor_state["task_id_holder"]
+            task_id,
+            tutor_state["task_id_holder"],
+            hint_requested,
         ),
-        daemon=True
+        daemon=True,
     )
     thread.start()
 
 
 def check_tutor_result(tutor_state):
-    """
-    Check if tutor calculation finished. Non-blocking.
-    
-    Returns:
-        tuple: (is_done, best_move, ai_score)
-    """
     with tutor_state["lock"]:
         result = tutor_state["result"].copy()
-    
-    if result.get("move") is not None:
-        # Calculation done
-        with tutor_state["lock"]:
-            tutor_state["is_computing"] = False
-            tutor_state["hint_ready"] = tutor_state["is_hint_requested"]
-            tutor_state["best_move"] = result["move"]
-            tutor_state["ai_score"] = result.get("score", 0.0)
-        return True, result["move"], result.get("score", 0.0)
-    
-    return False, None, None
+
+    if result.get("board_hash") is None:
+        return False, None, None
+
+    with tutor_state["lock"]:
+        tutor_state["is_computing"] = False
+        tutor_state["hint_ready"] = tutor_state["is_hint_requested"]
+        tutor_state["best_move"] = result.get("move")
+        tutor_state["best_move_score"] = result.get("best_move_score")
+        tutor_state["ai_score"] = result.get("score", 0.0)
+        tutor_state["last_board_hash"] = result.get("board_hash")
+        tutor_state["result"] = {}
+
+        cache_entry = {
+            "move": result.get("move"),
+            "score": result.get("score", 0.0),
+            "best_move_score": result.get("best_move_score"),
+            "search_level": "hard" if result.get("hint_requested") else "normal",
+        }
+        store_cache(tutor_state, result.get("board_hash"), cache_entry)
+
+    return True, result.get("move"), result.get("score", 0.0)
 
 
-# ============================================================================
-# PART 6: Blunder Detection
-# ============================================================================
+def apply_move_analysis(tutor_state, board_obj, actual_move, moved_color):
+    current_score = compute_board_score(board_obj)
+    prev_score = tutor_state.get("prev_score")
 
-def check_for_blunder(tutor_state, prev_score, current_score, blunder_threshold=-5.0):
-    """
-    Detect if player made a blunder (score dropped significantly).
-    
-    Args:
-        tutor_state: dict
-        prev_score: float, score before last move
-        current_score: float, score after last move
-        blunder_threshold: float, score drop threshold (e.g., -5.0 means drop of 5 is blunder)
-    
-    Returns:
-        boolean: True if blunder detected
-    """
-    if prev_score is None or current_score is None:
-        return False
-    
-    score_change = current_score - prev_score
-    is_blunder = score_change <= blunder_threshold
-    
-    if is_blunder:
-        tutor_state["blunder_detected"] = True
-        tutor_state["blunder_message"] = f"Bạn vừa đi một nước tồi tệ! (-{abs(score_change):.1f})"
-    
-    return is_blunder
+    blunder_type, score_drop = detect_blunder(prev_score, current_score, moved_color)
+    classification = classify_player_move(tutor_state, actual_move, moved_color, current_score)
 
+    tutor_state["prev_score"] = current_score
+    tutor_state["last_move_squares"] = actual_move
+    tutor_state["move_classification"] = classification
+    tutor_state["show_hint"] = False
+    tutor_state["hint_ready"] = False
+    tutor_state["hint_toggle"] = False
 
-def initialize_tutor_state():
-    """
-    Create and return empty tutor state dict.
-    Call this once at game start.
-    """
-    return {
-        "is_computing": False,
-        "hint_ready": False,
-        "is_hint_requested": False,
-        "best_move": None,
-        "ai_score": 0.0,
-        "prev_score": None,  # For blunder detection
-        "blunder_detected": False,
-        "blunder_message": "",
-        "hint_toggle": False,  # Shows highlight
-        "lock": threading.Lock(),
-        "result": {},  # {"move": ..., "score": ...}
-        "task_id_holder": {"current": 0},
-    }
+    if blunder_type in ("Mistake", "Blunder"):
+        now = time.time()
+        if now >= tutor_state.get("blunder_cooldown_end", 0.0):
+            tutor_state["is_blunder"] = True
+            tutor_state["blunder_type"] = blunder_type
+            tutor_state["blunder_detail"] = (
+                f"{format_score_text(prev_score)} → {format_score_text(current_score)}"
+            )
+            tutor_state["blunder_cooldown_end"] = now + 2.8
+        else:
+            tutor_state["is_blunder"] = tutor_state["is_blunder"] and now < tutor_state["blunder_cooldown_end"]
+    else:
+        tutor_state["is_blunder"] = False
+        tutor_state["blunder_type"] = None
+        tutor_state["blunder_detail"] = ""
+
+    return classification
 
 
-# ============================================================================
-# PART 7: Helper to clear blunder state
-# ============================================================================
+def draw_evaluation_bar(screen, ai_score, bar_x, bar_y, bar_width, bar_height,
+                        white_color=(255,255,255), black_color=(40,40,40),
+                        border_color=(120,120,120), text_color=(48,48,48)):
+    clamped_score = clamp_score(ai_score)
+    adjusted_score = clamped_score * 2.8
+    ratio = sigmoid(adjusted_score)
+
+    white_height = int(bar_height * ratio)
+    black_height = bar_height - white_height
+
+    black_rect = pygame.Rect(bar_x, bar_y, bar_width, black_height)
+    pygame.draw.rect(screen, black_color, black_rect, border_radius=10)
+
+    white_rect = pygame.Rect(bar_x, bar_y + black_height, bar_width, white_height)
+    pygame.draw.rect(screen, white_color, white_rect, border_radius=10)
+
+    full_rect = pygame.Rect(bar_x, bar_y, bar_width, bar_height)
+    pygame.draw.rect(screen, border_color, full_rect, 2, border_radius=10)
+
+    text_surface = pygame.font.SysFont('segoeui', 16, bold=True).render(
+        format_score_text(clamped_score), True, text_color
+    )
+    text_rect = text_surface.get_rect(center=(bar_x + bar_width//2, bar_y - 18))
+    screen.blit(text_surface, text_rect)
+
+    return white_rect, black_rect
+
+
+def draw_hint_highlight(screen, start_pos, end_pos, sq_size, board_x, board_y):
+    if not start_pos or not end_pos:
+        return
+
+    neon_start = (78, 255, 180, 130)
+    neon_end = (250, 205, 80, 140)
+    arrow_color = (144, 255, 202)
+
+    start_center = (
+        board_x + start_pos[1] * sq_size + sq_size // 2,
+        board_y + start_pos[0] * sq_size + sq_size // 2,
+    )
+    end_center = (
+        board_x + end_pos[1] * sq_size + sq_size // 2,
+        board_y + end_pos[0] * sq_size + sq_size // 2,
+    )
+
+    square_surface = pygame.Surface((sq_size, sq_size), pygame.SRCALPHA)
+    pygame.draw.rect(square_surface, neon_start, square_surface.get_rect(), border_radius=12)
+    pygame.draw.rect(square_surface, (*neon_start[:3], 200), square_surface.get_rect(), 3, border_radius=12)
+    screen.blit(square_surface, (board_x + start_pos[1] * sq_size, board_y + start_pos[0] * sq_size))
+
+    square_surface = pygame.Surface((sq_size, sq_size), pygame.SRCALPHA)
+    pygame.draw.rect(square_surface, neon_end, square_surface.get_rect(), border_radius=12)
+    pygame.draw.rect(square_surface, (244, 191, 94, 220), square_surface.get_rect(), 3, border_radius=12)
+    screen.blit(square_surface, (board_x + end_pos[1] * sq_size, board_y + end_pos[0] * sq_size))
+
+    arrow_surface = pygame.Surface((screen.get_width(), screen.get_height()), pygame.SRCALPHA)
+    for width, alpha in ((12, 40), (8, 90), (4, 200)):
+        pygame.draw.line(arrow_surface, (*arrow_color[:3], alpha), start_center, end_center, width)
+
+    dx = end_center[0] - start_center[0]
+    dy = end_center[1] - start_center[1]
+    angle = math.atan2(dy, dx)
+    arrow_head = [
+        (end_center[0] - 12 * math.cos(angle - 0.3), end_center[1] - 12 * math.sin(angle - 0.3)),
+        (end_center[0] - 12 * math.cos(angle + 0.3), end_center[1] - 12 * math.sin(angle + 0.3)),
+        end_center,
+    ]
+    pygame.draw.polygon(arrow_surface, arrow_color, arrow_head)
+    screen.blit(arrow_surface, (0, 0))
+
+
+def draw_blunder_popup(screen, tutor_state, screen_width, screen_height):
+    if not tutor_state.get("is_blunder"):
+        return
+    if time.time() >= tutor_state.get("blunder_cooldown_end", 0.0):
+        tutor_state["is_blunder"] = False
+        return
+
+    popup_w = 420
+    popup_h = 92
+    rect = pygame.Rect(
+        (screen_width - popup_w) // 2,
+        screen_height - popup_h - 24,
+        popup_w,
+        popup_h,
+    )
+
+    bg = pygame.Surface((popup_w, popup_h), pygame.SRCALPHA)
+    pygame.draw.rect(bg, (255, 244, 240, 230), bg.get_rect(), border_radius=18)
+    pygame.draw.rect(bg, (202, 96, 78), bg.get_rect(), 2, border_radius=18)
+    screen.blit(bg, rect.topleft)
+
+    title = "Sai lầm nghiêm trọng!" if tutor_state.get("blunder_type") == "Blunder" else "Sai lầm!"
+    title_font = pygame.font.SysFont('segoeui', 20, bold=True)
+    details_font = pygame.font.SysFont('segoeui', 16)
+
+    title_text = title_font.render(title, True, (133, 27, 27))
+    detail_text = details_font.render(tutor_state.get("blunder_detail", ""), True, (90, 30, 30))
+
+    screen.blit(title_text, (rect.x + 20, rect.y + 18))
+    screen.blit(detail_text, (rect.x + 20, rect.y + 46))
+
+
+def finalize_move_evaluation(tutor_state, board_obj, actual_move, moved_color):
+    classification = apply_move_analysis(tutor_state, board_obj, actual_move, moved_color)
+    return classification
+
 
 def clear_blunder_state(tutor_state):
-    """Reset blunder detection for next move."""
-    tutor_state["blunder_detected"] = False
-    tutor_state["blunder_message"] = ""
+    tutor_state["is_blunder"] = False
+    tutor_state["blunder_type"] = None
+    tutor_state["blunder_detail"] = ""
+    tutor_state["blunder_cooldown_end"] = 0.0
