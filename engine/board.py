@@ -1,169 +1,170 @@
-# engine/board.py
-
 class Board:
     def __init__(self):
+        self._setup_initial_position()
+
+    def _setup_initial_position(self):
         self.board = [
             ["bR", "bN", "bB", "bQ", "bK", "bB", "bN", "bR"],
-            ["bP", "bP", "bP", "bP", "bP", "bP", "bP", "bP"],
-            ["--", "--", "--", "--", "--", "--", "--", "--"],
-            ["--", "--", "--", "--", "--", "--", "--", "--"],
-            ["--", "--", "--", "--", "--", "--", "--", "--"],
-            ["--", "--", "--", "--", "--", "--", "--", "--"],
-            ["wP", "wP", "wP", "wP", "wP", "wP", "wP", "wP"],
-            ["wR", "wN", "wB", "wQ", "wK", "wB", "wN", "wR"]
+            ["bP"] * 8,
+            ["--"] * 8,
+            ["--"] * 8,
+            ["--"] * 8,
+            ["--"] * 8,
+            ["wP"] * 8,
+            ["wR", "wN", "wB", "wQ", "wK", "wB", "wN", "wR"],
         ]
-
         self.white_to_move = True
-        self.selected_square = None
-        self.captured_white = []
-        self.captured_black = []
         self.move_log = []
-        self.piece_states = {}  # Track piece states like has_moved
-        self.initialize_piece_states()
+        self.en_passant_target = None
+        self.piece_states = {}
+        self.selected_square = None
+        self.captured_white = []  # quân trắng đã ăn được (quân đen bị ăn)
+        self.captured_black = []  # quân đen đã ăn được (quân trắng bị ăn)
 
-    def initialize_piece_states(self):
-        for r in range(8):
-            for c in range(8):
-                piece = self.board[r][c]
-                if piece != "--":
-                    self.piece_states[(r, c)] = {'has_moved': False}
+    def reset(self):
+        self._setup_initial_position()
 
-    def get_piece(self, row, col):
-        return self.board[row][col]
+    def get_piece(self, r, c):
+        return self.board[r][c]
 
-    def set_piece(self, row, col, piece):
-        self.board[row][col] = piece
+    def make_move(self, start, end):
+        self.move_piece(start, end)
+
+    def _record_capture(self, captured_piece):
+        if captured_piece == "--":
+            return
+        if captured_piece[0] == "b":
+            self.captured_white.append(captured_piece)
+        else:
+            self.captured_black.append(captured_piece)
+
+    def _undo_capture(self, captured_piece):
+        if captured_piece == "--":
+            return
+        if captured_piece[0] == "b":
+            if self.captured_white:
+                self.captured_white.pop()
+        else:
+            if self.captured_black:
+                self.captured_black.pop()
 
     def move_piece(self, start, end):
         sr, sc = start
         er, ec = end
 
-        moving_piece = self.board[sr][sc]
-        target_piece = self.board[er][ec]
-        castling = False
-        en_passant = False
+        piece = self.board[sr][sc]
+        captured = self.board[er][ec]
+        if piece == "--":
+            return
 
-        # Handle castling
-        if moving_piece[1] == "K" and abs(sc - ec) == 2:
-            castling = True
-            # Move the rook
-            if ec == 6:  # Kingside
-                rook_start = (sr, 7)
-                rook_end = (sr, 5)
-            else:  # Queenside
-                rook_start = (sr, 0)
-                rook_end = (sr, 3)
-            self.board[rook_end[0]][rook_end[1]] = self.board[rook_start[0]][rook_start[1]]
-            self.board[rook_start[0]][rook_start[1]] = "--"
-            # Update piece states for rook
-            if rook_start in self.piece_states:
-                self.piece_states[rook_end] = self.piece_states.pop(rook_start)
-                self.piece_states[rook_end]['has_moved'] = True
-
-        # Handle en passant
-        if moving_piece[1] == "P" and sc != ec and target_piece == "--":
-            en_passant = True
-            # Remove the captured pawn
-            captured_row = sr
-            self.board[captured_row][ec] = "--"
-            if moving_piece[0] == "w":
-                self.captured_black.append("bP")
-            else:
-                self.captured_white.append("wP")
-
-        if target_piece != "--" and not en_passant:
-            if target_piece[0] == "w":
-                self.captured_white.append(target_piece)
-            else:
-                self.captured_black.append(target_piece)
-
-        self.board[er][ec] = moving_piece
-        self.board[sr][sc] = "--"
-
-        # Update piece states
-        has_moved_before = self.piece_states.get(start, {}).get('has_moved', False)
-        if start in self.piece_states:
-            self.piece_states[end] = self.piece_states.pop(start)
-            self.piece_states[end]['has_moved'] = True
-
-        rook_has_moved_before = None
-        if castling:
-            rook_has_moved_before = self.piece_states.get(rook_start, {}).get('has_moved', False)
-
-        # Pawn promotion will be handled in game.py after move
-
-        self.move_log.append({
+        move = {
             "start": start,
             "end": end,
-            "moving_piece": moving_piece,
-            "target_piece": target_piece,
-            "castling": castling,
-            "en_passant": en_passant,
-            "has_moved_before": has_moved_before,
-            "rook_has_moved_before": rook_has_moved_before,
-        })
-        self.white_to_move = not self.white_to_move
+            "piece": piece,
+            "moving_piece": piece,
+            "captured": captured,
+            "target_piece": captured,
+            "promotion": None,
+            "promotion_piece": None,
+            "castling": None,
+            "en_passant": None,
+            "en_passant_target_prev": self.en_passant_target,
+            "piece_states_prev": self.piece_states.copy(),
+            "captured_white_prev_len": len(self.captured_white),
+            "captured_black_prev_len": len(self.captured_black),
+        }
 
-    def make_move(self, start, end):
-        self.move_piece(start, end)
+        # En passant capture
+        if piece[1] == "P" and self.en_passant_target is not None and (er, ec) == self.en_passant_target and captured == "--":
+            cap_pos = (er + 1, ec) if piece[0] == "w" else (er - 1, ec)
+            move["en_passant"] = cap_pos
+            move["captured"] = self.board[cap_pos[0]][cap_pos[1]]
+            move["target_piece"] = move["captured"]
+            self.board[cap_pos[0]][cap_pos[1]] = "--"
+            self._record_capture(move["captured"])
+        elif captured != "--":
+            self._record_capture(captured)
+
+        # Move piece
+        self.board[er][ec] = piece
+        self.board[sr][sc] = "--"
+
+        # Promotion (auto queen)
+        if piece == "wP" and er == 0:
+            self.board[er][ec] = "wQ"
+            move["promotion"] = "wP"
+            move["promotion_piece"] = "wQ"
+        elif piece == "bP" and er == 7:
+            self.board[er][ec] = "bQ"
+            move["promotion"] = "bP"
+            move["promotion_piece"] = "bQ"
+
+        # Castling
+        if piece[1] == "K" and abs(ec - sc) == 2:
+            if ec > sc:
+                rook_start = (sr, 7)
+                rook_end = (sr, ec - 1)
+            else:
+                rook_start = (sr, 0)
+                rook_end = (sr, ec + 1)
+
+            rook_piece = self.board[rook_start[0]][rook_start[1]]
+            self.board[rook_end[0]][rook_end[1]] = rook_piece
+            self.board[rook_start[0]][rook_start[1]] = "--"
+            move["castling"] = (rook_start, rook_end)
+            self.piece_states[rook_end] = {"has_moved": True}
+            if rook_start in self.piece_states:
+                del self.piece_states[rook_start]
+
+        # En passant target update
+        if piece[1] == "P" and abs(er - sr) == 2:
+            self.en_passant_target = ((sr + er) // 2, sc)
+        else:
+            self.en_passant_target = None
+
+        # Update piece state
+        self.piece_states[(er, ec)] = {"has_moved": True}
+        if (sr, sc) in self.piece_states:
+            del self.piece_states[(sr, sc)]
+
+        self.move_log.append(move)
+        self.selected_square = None
+        self.white_to_move = not self.white_to_move
 
     def undo_move(self):
         if not self.move_log:
             return
 
-        last_move = self.move_log.pop()
-        (sr, sc) = last_move["start"]
-        (er, ec) = last_move["end"]
-        moving_piece = last_move["moving_piece"]
-        target_piece = last_move["target_piece"]
-        castling = last_move.get("castling", False)
-        en_passant = last_move.get("en_passant", False)
-        has_moved_before = last_move.get("has_moved_before", False)
-        rook_has_moved_before = last_move.get("rook_has_moved_before")
+        move = self.move_log.pop()
+        sr, sc = move["start"]
+        er, ec = move["end"]
 
-        self.board[sr][sc] = moving_piece
-        self.board[er][ec] = target_piece
+        # Restore board squares
+        self.board[sr][sc] = move["piece"]
+        self.board[er][ec] = move["captured"]
 
-        # Restore piece states
-        if (er, ec) in self.piece_states:
-            self.piece_states[(sr, sc)] = self.piece_states.pop((er, ec))
-            self.piece_states[(sr, sc)]['has_moved'] = has_moved_before
+        # Undo en passant
+        if move["en_passant"]:
+            r, c = move["en_passant"]
+            self.board[er][ec] = "--"
+            self.board[r][c] = move["captured"]
 
-        if castling:
-            # Undo rook move
-            if ec == 6:  # Kingside
-                rook_start = (sr, 7)
-                rook_end = (sr, 5)
-            else:  # Queenside
-                rook_start = (sr, 0)
-                rook_end = (sr, 3)
-            self.board[rook_start[0]][rook_start[1]] = self.board[rook_end[0]][rook_end[1]]
+        # Undo castling rook move
+        if move["castling"]:
+            rook_start, rook_end = move["castling"]
+            rook_piece = self.board[rook_end[0]][rook_end[1]]
+            self.board[rook_start[0]][rook_start[1]] = rook_piece
             self.board[rook_end[0]][rook_end[1]] = "--"
-            # Restore rook state
-            if rook_end in self.piece_states:
-                self.piece_states[rook_start] = self.piece_states.pop(rook_end)
-                self.piece_states[rook_start]['has_moved'] = rook_has_moved_before
 
-        if en_passant:
-            # Restore the captured pawn
-            captured_row = sr
-            captured_piece = "bP" if moving_piece[0] == "w" else "wP"
-            self.board[captured_row][ec] = captured_piece
-            if moving_piece[0] == "w":
-                self.captured_black.pop()
-            else:
-                self.captured_white.pop()
+        # Undo promotion
+        if move["promotion"]:
+            self.board[sr][sc] = move["promotion"]
 
-        if target_piece != "--" and not en_passant:
-            if target_piece[0] == "w" and self.captured_white:
-                self.captured_white.pop()
-            elif target_piece[0] == "b" and self.captured_black:
-                self.captured_black.pop()
-
-        # Promotion handled in game.py
-
-        self.white_to_move = not self.white_to_move
+        self.en_passant_target = move["en_passant_target_prev"]
+        self.piece_states = move["piece_states_prev"].copy()
         self.selected_square = None
+        self.white_to_move = not self.white_to_move
 
-    def reset(self):
-        self.__init__()
+        # Restore captured lists to exact previous lengths
+        self.captured_white = self.captured_white[:move["captured_white_prev_len"]]
+        self.captured_black = self.captured_black[:move["captured_black_prev_len"]]

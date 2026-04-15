@@ -1257,46 +1257,6 @@ def can_castle(board, king_pos, rook_pos):
     return True
 
 
-def handle_en_passant(board, move, last_move):
-    """
-    Handle en passant capture if applicable.
-    Returns True if en passant was performed.
-    """
-    sr, sc = move[0], move[1]
-    er, ec = move[2], move[3]
-    piece = board.board[sr][sc]
-    
-    if (piece[1] == "P" and sc != ec and board.board[er][ec] == "--" and
-        last_move and last_move["moving_piece"][1] == "P" and
-        abs(last_move["start"][0] - last_move["end"][0]) == 2 and
-        last_move["end"][0] == sr and last_move["end"][1] == ec):
-        # Remove the captured pawn
-        captured_row = last_move["end"][0]
-        board.board[captured_row][ec] = "--"
-        if piece[0] == "w":
-            board.captured_black.append("bP")
-        else:
-            board.captured_white.append("wP")
-        return True
-    return False
-
-
-def handle_pawn_promotion(board, pawn_pos):
-    """
-    Handle pawn promotion at the given position.
-    For now, auto-promotes to Queen. 
-    TODO: Add UI popup for player choice, auto-promote for AI.
-    """
-    r, c = pawn_pos
-    piece = board.board[r][c]
-    if piece == "wP" and r == 0:
-        board.board[r][c] = "wQ"
-        return "wQ"
-    elif piece == "bP" and r == 7:
-        board.board[r][c] = "bQ"
-        return "bQ"
-    return None
-
 
 def is_move_safe(board, move, player):
     """
@@ -1701,13 +1661,14 @@ def run_pve(screen, ai_level='normal'):
                 valid_moves = []
                 ai_turn_started_at = None
                 move_made = True
+                
 
         current_color = 'w' if board_obj.white_to_move else 'b'
         current_name = 'Trắng' if current_color == 'w' else 'Đen'
 
         if move_made:
             ai_score = evaluate_board(board_obj, ai_level)
-            display_score = ai_score
+            display_score = display_score * 0.9 + ai_score * 0.1
             last_move = board_obj.move_log[-1] if board_obj.move_log else None
             if last_move and last_move.get('moving_piece', '--')[0] == human_color and pending_blunder_prev_score is not None:
                 score_before = pending_blunder_prev_score
